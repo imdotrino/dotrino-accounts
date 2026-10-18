@@ -15,10 +15,10 @@
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1145.0",
     "@aws-sdk/client-lambda": "3.1145.0",
-    "@dotrino/identity": "0.116.0",
+    "@dotrino/identity": "0.121.2",
     "@dotrino/remote-agent": "0.19.0",
     "@dotrino/update": "0.7.0",
-    "@dotrino/vault": "0.86.0"
+    "@dotrino/vault": "0.92.0"
   },
   "engines": {
     "node": ">=22.13"
