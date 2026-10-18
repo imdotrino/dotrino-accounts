@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "bucket", "Effect": "Allow",
+      "Action": ["s3:CreateBucket", "s3:PutBucketVersioning", "s3:PutBucketPublicAccessBlock", "s3:PutBucketTagging", "s3:GetBucketLocation", "s3:ListBucket", "s3:GetObject"],
+      "Resource": ["arn:aws:s3:::dotrino-vault-h*", "arn:aws:s3:::dotrino-vault-h*/*"] },
+    { "Sid": "roles", "Effect": "Allow",
+      "Action": ["iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:GetRolePolicy", "iam:TagRole", "iam:PassRole"],
+      "Resource": "arn:aws:iam::147464502454:role/dotrino-vault-h*" },
+    { "Sid": "functions", "Effect": "Allow",
+      "Action": ["lambda:CreateFunction", "lambda:DeleteFunction", "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:InvokeFunction", "lambda:TagResource", "lambda:CreateFunctionUrlConfig", "lambda:DeleteFunctionUrlConfig", "lambda:GetFunctionUrlConfig", "lambda:AddPermission", "lambda:RemovePermission", "lambda:PutFunctionEventInvokeConfig", "lambda:DeleteFunctionEventInvokeConfig", "lambda:GetFunctionEventInvokeConfig", "lambda:PutFunctionConcurrency", "lambda:DeleteFunctionConcurrency"],
+      "Resource": "arn:aws:lambda:us-east-1:147464502454:function:dotrino-vault-h*" },
+    { "Sid": "logs", "Effect": "Allow", "Action": ["logs:CreateLogGroup", "logs:PutRetentionPolicy"], "Resource": "*" }
+  ]
+}

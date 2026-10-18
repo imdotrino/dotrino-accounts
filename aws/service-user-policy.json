@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "stacks", "Effect": "Allow",
+      "Action": ["cloudformation:CreateStack", "cloudformation:DescribeStacks"],
+      "Resource": "arn:aws:cloudformation:us-east-1:147464502454:stack/dotrino-vault-h*/*" },
+    { "Sid": "passTheStackRole", "Effect": "Allow", "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::147464502454:role/dotrino-accounts-cfn",
+      "Condition": { "StringEquals": { "iam:PassedToService": "cloudformation.amazonaws.com" } } },
+    { "Sid": "onOff", "Effect": "Allow",
+      "Action": ["lambda:PutFunctionConcurrency", "lambda:DeleteFunctionConcurrency"],
+      "Resource": "arn:aws:lambda:us-east-1:147464502454:function:dotrino-vault-h*" }
+  ]
+}
