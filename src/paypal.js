@@ -99,6 +99,12 @@ export function paypalClient ({ clientId, secret, live = false, fetch = globalTh
       return d?.verification_status === 'SUCCESS'
     },
 
+    /** Para `scripts/setup-webhook.mjs`: el webhook de la app, una vez por entorno. */
+    async createWebhook ({ url, eventTypes }) {
+      return call('/v1/notifications/webhooks', { method: 'POST', body: { url, event_types: eventTypes.map((name) => ({ name })) } })
+    },
+    async listWebhooks () { return (await call('/v1/notifications/webhooks')).webhooks || [] },
+
     /** Para `scripts/setup-plan.mjs`: el producto y el plan, una vez por entorno. */
     async createProduct ({ name, description }) {
       return call('/v1/catalogs/products', { method: 'POST', body: { name, description, type: 'SERVICE', category: 'SOFTWARE' } })
