@@ -129,7 +129,7 @@ export class Accounts {
     // buscar, en vez de dejar una réplica pagada sin dueño.
     this.store.update(row.id, { vault, stack: 'creating', updated: this.now() })
     try {
-      await this.vaults.create({ vault })
+      await this.vaults.create({ vault, owner: row.account })
     } catch (e) {
       this.store.update(row.id, { stack: 'failed', note: `create: ${e.code || e.name}: ${e.message}`, updated: this.now() })
       this.log(`[accounts] ${row.id}: stack ${vault} not created: ${e.message}`)

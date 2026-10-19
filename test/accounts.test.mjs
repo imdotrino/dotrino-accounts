@@ -67,7 +67,7 @@ function fakeVaults () {
   return {
     stacks,
     invocations: [],
-    async create ({ vault }) { stacks.set(vault, { state: 'creating', on: true, enrolled: false, device: null }) },
+    async create ({ vault, owner }) { stacks.set(vault, { owner, state: 'creating', on: true, enrolled: false, device: null }) },
     async describe (vault) {
       const s = stacks.get(vault)
       return s.state === 'ready' ? { state: 'ready' } : { state: s.state, reason: s.reason }
@@ -134,6 +134,7 @@ test('comprar: la compra la firma la cuenta; sin aprobar en PayPal no hay répli
   assert.equal(c.stack, 'creating')
   await confirm(t, id)
   assert.equal(t.vaults.stacks.size, 1, 'confirmar dos veces no crea otra réplica')
+  assert.equal([...t.vaults.stacks.values()][0].owner, ana.account, 'la réplica nace sabiendo qué cuenta la pagó')
   await assert.rejects(confirm(t, id, beto), { code: 'sub-not-found' })
   await assert.rejects(t.accounts.subscribe({ req: await req(ana, { op: 'subscribe', product: 'vault' }) }), { code: 'request-mismatch' })
 })

@@ -54,8 +54,12 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
   }
 
   return {
-    /** Una RÉPLICA vacía (`Mode: replica`): nace sin cuenta y espera a que su dueño la enrole. */
-    async create ({ vault }) {
+    /**
+     * Una RÉPLICA vacía (`Mode: replica`) que espera a que su dueño la enrole. `owner` es la
+     * cuenta que la pagó: la réplica nace sabiéndolo y rechaza la invitación de cualquier otra.
+     */
+    async create ({ vault, owner }) {
+      if (!/^[0-9a-f]{64}$/.test(owner || '')) throw Object.assign(new Error(`vaults: no owner for ${vault}`), { code: 'no-owner' })
       await cfn.send(new CreateStackCommand({
         StackName: stackName(vault),
         TemplateBody: await templateBody(),
@@ -64,6 +68,7 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
         Parameters: [
           { ParameterKey: 'Name', ParameterValue: vault },
           { ParameterKey: 'Mode', ParameterValue: 'replica' },
+          { ParameterKey: 'Owner', ParameterValue: owner },
           { ParameterKey: 'SharedKeyArn', ParameterValue: sharedKeyArn },
           { ParameterKey: 'PermissionsBoundary', ParameterValue: roleBoundaryArn }
         ],

@@ -208,6 +208,26 @@ Primero se paga y después se enrola, porque una invitación caduca a los **5 mi
 5. **`/mine`** pregunta a la réplica si ya está enrolada (`{ kind:'status' }`, como mucho cada
    10 s) y lo enseña.
 
+**Solo en la cuenta que la pagó, y en una sola** (dueño, 2026-10-19):
+
+- **La réplica nace sabiendo quién la pagó**: la pila se crea con `Owner` = `account` de la fila
+  (`pubkeyId` de la llave del perfil), y la función lo lee de su entorno. Nadie lo cambia
+  después: ni la página ni quien invoque la función.
+- **Rechaza la invitación de otra cuenta ANTES de enseñar el código.** La bóveda manda en el
+  reto del alta su cadena de selladoras (vault ≥ 0.95.0); su raíz la firma la llave del perfil,
+  así que no se puede fingir. Con otra cuenta no hay código y `/enroll` contesta `wrong-account`
+  (409): no hay nada que aprobar. Una bóveda anterior no manda la cadena y la réplica tampoco
+  entra.
+- **No es multiperfil**: una vez enrolada rechaza cualquier otro emparejamiento
+  (`already-enrolled`). La segunda bóveda (§8.bis) seguirá la misma regla.
+- **La bóveda en el navegador es de un perfil** (identity ≥ 0.123.0): el interruptor guarda de
+  qué perfil es, y la bóveda no arranca si la cuenta abierta en la pestaña no sella su acta
+  (una entrada con usuario y contraseña). Así la invitación del botón «sacar la invitación en
+  este navegador» es siempre de la cuenta que firma la compra.
+- **La bóveda nunca manda invitaciones por la red ni recibe el PIN** (dueño, 2026-10-19). Con
+  una bóveda externa se copia la invitación y se teclea el código allí; solo cuando la bóveda
+  es el mismo navegador la página las pasa por dentro.
+
 **Si falla** (no se aprobó a tiempo, invitación caducada o gastada):
 
 - **Reenrolar**: el cliente saca otra invitación y la página la manda otra vez (paso 3). Una
