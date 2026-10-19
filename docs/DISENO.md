@@ -63,8 +63,14 @@ vault.dotrino.com/hosted ──1 POST /subscribe──▶ accounts ──▶ Pay
   `#fragment`, dura 7 días y solo sirve una vez.
 - **El pedido no lleva datos del cliente.** A PayPal le llega el `custom_id` interno, como en
   names.
-- Si el paso 3 falla a mitad (la pila no se crea), la suscripción queda `provisioning-failed`,
-  se ve en la página y se reintenta; no se cobra un segundo mes sin bóveda: se cancela.
+- Si el paso 3 falla (la pila no se crea), la fila queda `stack: 'failed'` con el primer recurso
+  que falló en `note`, la suscripción se **cancela** y lo cobrado se **devuelve** (`refund`:
+  `pending` → `done`). PayPal apunta el primer cobro minutos después de aprobar, así que la
+  devolución la reintenta el barrido; a los 3 días sin cobro queda `none`.
+- **Quién crea qué en AWS**: el usuario IAM `dotrino-accounts` (sin políticas administradas, solo
+  `hosted-vaults`) crea la pila y le pasa el rol dedicado `dotrino-accounts-cfn`, que es quien crea
+  lo de dentro (`hosted-vault-stacks`, acotado a `dotrino-vault-h*`). La llave admin no se usa
+  para desplegar.
 
 ## 4. Renovar, cancelar, apagar, reactivar
 
@@ -200,6 +206,18 @@ el login con contraseña del §5 (el código de activación hace de contraseña 
 | `dotrino-accounts` | `product: 'vault' \| 'replica'`; la compra de réplica va firmada por la cuenta, con la invitación; reenrolar (`UpdateStack`) y borrar a las 24 h; planes de PayPal aparte |
 
 ## 10. Abierto
+
+- **Administración desde el perfil de Dotrino** (pedido del dueño, 2026-10-19). La cuenta de AWS
+  es de Dotrino, así que el perfil de Dotrino tiene que poder: ver todas las suscripciones y
+  bóvedas, **encenderlas y apagarlas**, **devolver un pago**, **añadir una réplica a un perfil
+  concreto** y **borrar una bóveda**. Lo que NO: atar una bóveda a un perfil que ya existe (una
+  bóveda alojada nace con su propia cuenta). Las peticiones van firmadas como las del cliente, y
+  las acepta solo la cuenta de Dotrino.
+- **Límite de permisos para el rol de CloudFormation**: hoy `dotrino-accounts-cfn` puede crear
+  roles `dotrino-vault-h*` con cualquier política dentro y pasárselos a una Lambda, así que con la
+  llave de `dotrino-accounts` y otra plantilla se puede subir de privilegios. Se cierra con un
+  *permissions boundary*: el rol solo crea roles que lo lleven, y la plantilla de la bóveda se lo
+  pone (versión nueva de `dotrino-vault/lambda`).
 
 - **Factura del SRI** por cada cobro mensual: emisor autorizado (facturero), aparte del cobro.
 - **Moneda y precio**: $5 + 15 % IVA = **$5.75/mes**, cobrado en USD.
