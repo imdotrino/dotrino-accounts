@@ -152,6 +152,28 @@ entra ahí, no aquí. Lo firmado se comprueba con `verifySignedFor` del pilar de
 5. **PayPal Live**, plan real de $5.75, y la prueba de punta a punta con dinero.
 6. Firmar el acta en el navegador (§5).
 
+## 8.bis DECIDIDO (2026-10-19): nada nace vacío; todo entra en la cuenta que ya tienes
+
+> El dueño, después de la primera compra de prueba: *«me entró a la cabeza el concepto de
+> multivault que ya está soportado, y debería ser la forma correcta de crear un nuevo vault, no
+> crear una vacía con un perfil»*. Y: *«lo bueno de crear una bóveda adicional desde el perfil
+> actual es que no hay que cambiar nunca de perfil para gestionarla»*.
+
+Cambia lo que dicen §3 y §5 sobre la bóveda alojada:
+
+- **Se quita el modo «bóveda vacía con perfil nuevo»** (`admin@…` + código de activación) de
+  `dotrino-accounts`. La plantilla lo conserva para quien monta la bóveda en su propio AWS.
+- **Todo lo alojado ENTRA en la cuenta del cliente** con invitación + código (§9.1), y por eso la
+  compra va firmada por esa cuenta: se ve, se cancela y se administra desde el perfil que ya usas.
+- **Primero la réplica** ($3, §9): no tiene maestra, así que alguien con acceso a la cuenta de AWS
+  no puede firmar por el cliente.
+- **Después la segunda bóveda** ($5, el multivault de `dotrino-vault/docs/replicas.md` §1.bis:
+  entra con `join`, tiene maestra y `+sella`). **No sale a la venta hasta que su maestra vaya
+  sellada con la contraseña del cliente** (§5): sin eso es un sellador abierto en la cuenta de
+  Dotrino, que es justo lo que se desmontó en EC2 el 2026-09-02.
+- La primera compra de prueba (2026-10-19) usó el modo viejo; esa bóveda (`h17005f242842`) se
+  queda hasta su fecha pagada y no se crean más así.
+
 ## 9. Segundo producto: la réplica alojada ($3/mes + IVA)
 
 > Pedido por el dueño el 2026-10-18: *«que se pueda agregar un vault o un replica, el replica
@@ -193,8 +215,7 @@ fila nace ya atada a `account`.
   en PayPal y se borra la pila (`DeleteStack`, solo de pilas de réplica `dotrino-vault-r*`; el
   bucket vacío se queda, no cuesta). Nada queda corriendo ni cobrándose sin réplica.
 
-La bóveda alojada **no** pasa por aquí: no entra a una cuenta, crea la suya. Su primer acceso es
-el login con contraseña del §5 (el código de activación hace de contraseña inicial).
+La segunda bóveda (§8.bis) pasa por el mismo camino, con `join` en vez de `replica enroll`.
 
 ### 9.2. Lo que hay que tocar
 
@@ -202,8 +223,8 @@ el login con contraseña del §5 (el código de activación hace de contraseña 
 |---|---|
 | `dotrino-vault/lambda` | `Mode: replica` en la plantilla (sin perfil ni maestra) con `Invitation`; el primer arranque canjea, da `DeviceId`/`PairingCode` y espera el «enrolado»; las sesiones corren `replica run` |
 | `dotrino-vault` (consola) | botón «Añadir réplica alojada» (saca la invitación y abre la compra) y el pendiente con su código |
-| `websocket-proxy` | despertar también a una réplica de la cuenta (hoy `registerWake` lo firma la llave de comunicación de la bóveda; hay que admitirlo de un miembro con `replica`) |
-| `dotrino-accounts` | `product: 'vault' \| 'replica'`; la compra de réplica va firmada por la cuenta, con la invitación; reenrolar (`UpdateStack`) y borrar a las 24 h; planes de PayPal aparte |
+| `websocket-proxy` | nada, en principio: el timbre (`push-subscribe` `kind:'wake'`) ya lo acepta de cualquier miembro del acta (`verifyActaMembership`). Falta comprobarlo con una réplica |
+| `dotrino-accounts` | quitar el modo de perfil nuevo; `product: 'replica'` (y `'vault'` cuando §5 exista); la compra va firmada por la cuenta, con la invitación; reenrolar (`UpdateStack`) y borrar a las 24 h; plan de PayPal de $3,45 |
 
 ## 10. Abierto
 
