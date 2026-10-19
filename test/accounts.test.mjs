@@ -48,7 +48,7 @@ function fakePaypal () {
       subs.set(id, { id, status: 'APPROVAL_PENDING', planId, customId, paidThrough: null })
       return { id, approveUrl: 'https://paypal.test/approve/' + id }
     },
-    async getSubscription (id) { const s = subs.get(id); if (!s) throw Object.assign(new Error('nope'), { code: 'paypal-not-found' }); return { ...s } },
+    async getSubscription (id) { const s = subs.get(id); if (!s) throw Object.assign(new Error('nope'), { code: 'provider-not-found' }); return { ...s } },
     async cancelSubscription (id) { const s = subs.get(id); s.status = 'CANCELLED'; s.paidThrough = null },
     async verifyWebhook () { return this.webhookOk },
     approve (id) { Object.assign(subs.get(id), { status: 'ACTIVE', paidThrough: clock + 30 * DAY }) }

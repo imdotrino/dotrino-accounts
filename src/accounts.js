@@ -12,12 +12,16 @@
  *     activación.
  */
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto'
+import { priceWithTax } from '@dotrino/pay'
 import { verifySignedFor } from '@dotrino/identity/assertion'
 import { pubkeyId } from '@dotrino/identity/keyid'
 
 export const AUDIENCE = 'https://accounts.dotrino.com'
 export const FORMAT_V = 1
-export const PRICE = Object.freeze({ subtotal: '5.00', taxPercent: '15', total: '5.75', currency: 'USD', interval: 'month' })
+/** $5/mes + IVA (15 % en Ecuador). El plan de PayPal se da de alta con esto (`scripts/setup-plan.mjs`). */
+export const PRICE_CENTS = 500
+export const TAX_PERCENT = 15
+export const PRICE = Object.freeze({ ...priceWithTax({ unitCents: PRICE_CENTS, taxPercent: TAX_PERCENT }), taxPercent: TAX_PERCENT, currency: 'USD', interval: 'month' })
 const DAY = 24 * 60 * 60 * 1000
 /** Cuánto vale el código de activación: lo que tarda alguien en volver a mirar su correo. */
 export const ACTIVATION_MS = 7 * DAY

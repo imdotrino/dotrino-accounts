@@ -7,7 +7,7 @@
  *
  *   PAYPAL_CLIENT_ID=… PAYPAL_SECRET=… [PAYPAL_LIVE=1] node scripts/setup-webhook.mjs [url]
  */
-import { paypalClient } from '../src/paypal.js'
+import { paypalClient } from '@dotrino/pay'
 
 const { PAYPAL_CLIENT_ID, PAYPAL_SECRET, PAYPAL_LIVE } = process.env
 const url = process.argv[2] || 'https://accounts.dotrino.com/paypal/webhook'

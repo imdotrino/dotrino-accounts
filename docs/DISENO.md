@@ -114,10 +114,10 @@ Lo que cambia:
 - **Tablas**: `subscriptions(id, paypalId, status, paidThrough, account, stack, activationExp, ts)`
   y `events(id, subscription, kind, raw, ts)` (cada webhook, para auditar).
 
-**Reutilizar, no copiar** (sin código duplicado): el cliente de PayPal de names
-(`dotrino-names/server/paypal.js`) y su `priceFor` con IVA pasan a una pieza compartida que usan
-los dos; `signedRequest`/`verifySigned` de names, igual. Dónde vive esa pieza se decide al
-implementar (un paquete `@dotrino/billing` o un módulo de `@dotrino/vault/service`).
+**Reutilizar, no copiar** (sin código duplicado): los cobros van por **`@dotrino/pay`**
+(`dotrino-pay`), el mismo paquete que usa names: el cliente de PayPal (pedidos, suscripciones,
+webhooks), el precio con impuestos y los errores con código. Otro proveedor (PayPhone, Lightning)
+entra ahí, no aquí. Lo firmado se comprueba con `verifySignedFor` del pilar de identidad.
 
 ## 7. Lo que hay que tocar en otras piezas
 

@@ -8,7 +8,7 @@
  * Lee PAYPAL_CLIENT_ID, PAYPAL_SECRET y PAYPAL_LIVE del entorno. El precio es el de
  * `src/accounts.js` (PRICE): no se escribe dos veces.
  */
-import { paypalClient } from '../src/paypal.js'
+import { paypalClient } from '@dotrino/pay'
 import { PRICE } from '../src/accounts.js'
 
 const { PAYPAL_CLIENT_ID, PAYPAL_SECRET, PAYPAL_LIVE } = process.env
