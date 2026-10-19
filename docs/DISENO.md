@@ -212,7 +212,8 @@ el login con contraseña del §5 (el código de activación hace de contraseña 
   bóvedas, **encenderlas y apagarlas**, **devolver un pago**, **añadir una réplica a un perfil
   concreto** y **borrar una bóveda**. Lo que NO: atar una bóveda a un perfil que ya existe (una
   bóveda alojada nace con su propia cuenta). Las peticiones van firmadas como las del cliente, y
-  las acepta solo la cuenta de Dotrino.
+  las acepta solo la cuenta de Dotrino. **La página lista los aparatos `accounts` del acta de
+  Dotrino** —puede haber varios— y al abrir uno se despliega lo que administra ese.
 - **Límite de permisos para el rol de CloudFormation**: hoy `dotrino-accounts-cfn` puede crear
   roles `dotrino-vault-h*` con cualquier política dentro y pasárselos a una Lambda, así que con la
   llave de `dotrino-accounts` y otra plantilla se puede subir de privilegios. Se cierra con un
