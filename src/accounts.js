@@ -25,6 +25,8 @@ export const PRICE = Object.freeze({ ...priceWithTax({ unitCents: PRICE_CENTS, t
 const DAY = 24 * 60 * 60 * 1000
 /** Cuánto vale el código de activación: lo que tarda alguien en volver a mirar su correo. */
 export const ACTIVATION_MS = 7 * DAY
+/** Cuánto se espera a que PayPal apunte el primer cobro antes de dar por hecho que no lo hubo. */
+export const REFUND_WAIT_MS = 3 * DAY
 
 export class AccountsError extends Error {
   constructor (code, message) { super(message); this.code = code }
@@ -108,7 +110,7 @@ export class Accounts {
     } catch (e) {
       this.store.update(row.id, { stack: 'failed', note: `create: ${e.code || e.name}: ${e.message}`, updated: this.now() })
       this.log(`[accounts] ${row.id}: stack ${vault} not created: ${e.message}`)
-      await this.#refund(this.store.get(row.id))
+      await this.#giveBack(this.store.get(row.id))
       return this.store.get(row.id)
     }
     this.log(`[accounts] ${row.id}: creating vault ${vault}`)
@@ -126,21 +128,44 @@ export class Accounts {
     if (d.state === 'failed') {
       this.store.update(row.id, { stack: 'failed', note: d.reason, updated: this.now() })
       this.log(`[accounts] ${row.id}: vault ${row.vault} failed: ${d.reason}`)
-      await this.#refund(this.store.get(row.id))
+      await this.#giveBack(this.store.get(row.id))
     }
     return this.store.get(row.id)
   }
 
-  /** Sin bóveda no se cobra el mes siguiente: la suscripción se cancela y se dice. */
-  async #refund (row) {
+  /** Sin bóveda no se cobra: la suscripción se cancela y lo que ya se cobró se devuelve. */
+  async #giveBack (row) {
     if (!row.paypal_id || !this.paypal) return
     try {
       await this.paypal.cancelSubscription(row.paypal_id, 'the vault could not be created')
       await this.refresh(row)
     } catch (e) { this.log(`[accounts] ${row.id}: could not cancel after a failed vault: ${e.message}`) }
+    this.store.update(row.id, { refund: 'pending', updated: this.now() })
+    try {
+      await this.settleRefund(this.store.get(row.id))
+    } catch (e) { this.log(`[accounts] ${row.id}: refund not done yet: ${e.code || ''} ${e.message}`) }
   }
 
-  /** Pregunta a PayPal por la suscripción y apunta lo que diga. Después, enciende o apaga. */
+  /**
+   * Devuelve lo cobrado a una suscripción cuya bóveda no se creó. PayPal apunta el primer cobro
+   * unos minutos después de aprobar, así que justo al fallar puede no haber nada que devolver
+   * todavía: queda 'pending' y el barrido lo vuelve a mirar.
+   */
+  async settleRefund (row) {
+    const pays = await this.#payments().subscriptionPayments(row.paypal_id, { since: row.created - DAY, until: this.now() })
+    const due = pays.filter((p) => p.status === 'COMPLETED')
+    for (const p of due) {
+      const r = await this.paypal.refundCapture(p.id, { note: 'Your vault could not be created.' })
+      this.log(`[accounts] ${row.id}: refunded ${p.amount} (${p.id} → ${r.id} ${r.status})`)
+    }
+    if (due.length || pays.some((p) => p.status === 'REFUNDED')) this.store.update(row.id, { refund: 'done', updated: this.now() })
+    else if (this.now() - row.created > REFUND_WAIT_MS) {
+      this.store.update(row.id, { refund: 'none', updated: this.now() })
+      this.log(`[accounts] ${row.id}: nothing was charged, nothing to refund`)
+    }
+    return this.store.get(row.id)
+  }
+
   async refresh (row) {
     const s = await this.#payments().getSubscription(row.paypal_id)
     if (s.customId !== row.id) fail('subscription-mismatch', `subscription ${row.paypal_id} is not ${row.id}`)
@@ -225,6 +250,7 @@ export class Accounts {
       try {
         if (row.activation && row.activation_until <= this.now()) this.store.update(row.id, { activation: null, activation_until: null })
         if (row.stack === 'creating') await this.progress(row)
+        if (row.refund === 'pending') await this.settleRefund(row)
         if (row.paypal_id && row.status !== 'APPROVAL_PENDING') await this.refresh(this.store.get(row.id))
         n++
       } catch (e) { this.log(`[accounts] sweep ${row.id}: ${e.code || ''} ${e.message}`) }

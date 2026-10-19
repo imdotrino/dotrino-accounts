@@ -50,6 +50,10 @@ function fakePaypal () {
     },
     async getSubscription (id) { const s = subs.get(id); if (!s) throw Object.assign(new Error('nope'), { code: 'provider-not-found' }); return { ...s } },
     async cancelSubscription (id) { const s = subs.get(id); s.status = 'CANCELLED'; s.paidThrough = null },
+    payments: new Map(),
+    refunds: [],
+    async subscriptionPayments (id) { return (this.payments.get(id) || []).map((p) => ({ ...p })) },
+    async refundCapture (captureId) { this.refunds.push(captureId); for (const ps of this.payments.values()) for (const p of ps) if (p.id === captureId) p.status = 'REFUNDED'; return { id: 'R' + captureId, status: 'COMPLETED' } },
     async verifyWebhook () { return this.webhookOk },
     approve (id) { Object.assign(subs.get(id), { status: 'ACTIVE', paidThrough: clock + 30 * DAY }) }
   }
@@ -144,6 +148,24 @@ test('si la pila falla, no se cobra el mes siguiente: la suscripción se cancela
   const v = await t.accounts.status({ id, claim })
   assert.equal(v.stack, 'failed')
   assert.equal(v.status, 'CANCELLED')
+})
+
+test('si la pila falla, el primer mes se devuelve, aunque PayPal lo apunte después', async () => {
+  const t = setup()
+  const { id, claim } = await t.accounts.subscribe()
+  const pid = t.accounts.store.get(id).paypal_id
+  t.paypal.approve(pid)
+  await t.accounts.confirm({ id, claim })
+  const [vault] = t.vaults.stacks.keys()
+  Object.assign(t.vaults.stacks.get(vault), { state: 'failed', reason: 'ROLLBACK_COMPLETE' })
+  await t.accounts.status({ id, claim })
+  assert.equal(t.accounts.store.get(id).refund, 'pending', 'todavía no hay cobro que devolver')
+  t.paypal.payments.set(pid, [{ id: 'CAP0000001', status: 'COMPLETED', amount: '5.75' }])
+  await t.accounts.sweep()
+  assert.deepEqual(t.paypal.refunds, ['CAP0000001'])
+  assert.equal(t.accounts.store.get(id).refund, 'done')
+  await t.accounts.sweep()
+  assert.deepEqual(t.paypal.refunds, ['CAP0000001'], 'no se devuelve dos veces')
 })
 
 test('la cuenta de la bóveda ve y cancela la suya; otra cuenta no', async () => {
