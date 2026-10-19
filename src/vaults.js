@@ -15,7 +15,7 @@
  * crea en la cuenta de Dotrino exactamente lo que dice la release, y nada más.
  */
 import { createHash } from 'node:crypto'
-import { CloudFormationClient, CreateStackCommand, DescribeStacksCommand } from '@aws-sdk/client-cloudformation'
+import { CloudFormationClient, CreateStackCommand, DescribeStacksCommand, DescribeStackEventsCommand } from '@aws-sdk/client-cloudformation'
 import { LambdaClient, PutFunctionConcurrencyCommand, DeleteFunctionConcurrencyCommand } from '@aws-sdk/client-lambda'
 
 export const stackName = (vault) => `dotrino-vault-${vault}`
@@ -38,6 +38,14 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
     if (sha !== templateSha256) throw Object.assign(new Error(`vaults: template sha256 ${sha} is not the expected one`), { code: 'template-mismatch' })
     template = body
     return template
+  }
+
+  // El estado final de una pila rota dice cómo acabó el ROLLBACK, no por qué empezó: la causa
+  // es el primer recurso que falló al crearse, y esa está en los eventos.
+  async function firstFailure (vault) {
+    const r = await cfn.send(new DescribeStackEventsCommand({ StackName: stackName(vault) }))
+    const e = (r.StackEvents || []).filter((x) => x.ResourceStatus === 'CREATE_FAILED' && x.ResourceStatusReason).at(-1)
+    return e ? ` · first failure: ${e.LogicalResourceId}: ${e.ResourceStatusReason}` : ''
   }
 
   return {
@@ -67,7 +75,7 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
         if (!out.Login || !/^[0-9a-f]{64}$/.test(out.Account || '')) throw Object.assign(new Error(`vaults: stack ${vault} has no Login/Account outputs (template too old?)`), { code: 'stack-outputs' })
         return { state: 'ready', login: out.Login, account: out.Account }
       }
-      return { state: 'failed', reason: `${s.StackStatus}${s.StackStatusReason ? ': ' + s.StackStatusReason : ''}` }
+      return { state: 'failed', reason: `${s.StackStatus}${s.StackStatusReason ? ': ' + s.StackStatusReason : ''}${await firstFailure(vault)}` }
     },
 
     async setOn (vault, on) {
