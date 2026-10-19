@@ -8,7 +8,7 @@
  *   dotrino-accounts info [--json]      qué aparato es (CONVENCIONES §15.1)
  *
  * Todo lo de configurar sale del cajón `accounts`: PayPal (PAYPAL_CLIENT_ID, PAYPAL_SECRET,
- * PAYPAL_LIVE, PAYPAL_PLAN_ID, PAYPAL_WEBHOOK_ID) y AWS (AWS_ACCESS_KEY_ID,
+ * PAYPAL_LIVE, PAYPAL_REPLICA_PLAN_ID, PAYPAL_WEBHOOK_ID) y AWS (AWS_ACCESS_KEY_ID,
  * AWS_SECRET_ACCESS_KEY, AWS_REGION, VAULT_TEMPLATE_URL, VAULT_TEMPLATE_SHA256,
  * VAULT_SHARED_KEY_ARN, VAULT_CFN_ROLE_ARN, VAULT_ROLE_BOUNDARY_ARN). Sin la bóveda no arranca: no hay con qué cobrar ni dónde crear nada.
  */
@@ -36,7 +36,7 @@ if (cmd === 'info') {
 } else if (cmd === 'serve') {
   const identity = await loadServiceIdentity({ log }).catch(die)
   const s = await loadSecrets(identity, { log }).catch(die)
-  const need = ['PAYPAL_CLIENT_ID', 'PAYPAL_SECRET', 'PAYPAL_PLAN_ID', 'PAYPAL_WEBHOOK_ID', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'VAULT_TEMPLATE_URL', 'VAULT_TEMPLATE_SHA256', 'VAULT_SHARED_KEY_ARN', 'VAULT_CFN_ROLE_ARN', 'VAULT_ROLE_BOUNDARY_ARN']
+  const need = ['PAYPAL_CLIENT_ID', 'PAYPAL_SECRET', 'PAYPAL_REPLICA_PLAN_ID', 'PAYPAL_WEBHOOK_ID', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'VAULT_TEMPLATE_URL', 'VAULT_TEMPLATE_SHA256', 'VAULT_SHARED_KEY_ARN', 'VAULT_CFN_ROLE_ARN', 'VAULT_ROLE_BOUNDARY_ARN']
   const missing = need.filter((k) => !s[k])
   if (missing.length) die(Object.assign(new Error(`drawer "accounts" lacks ${missing.join(', ')}`), { code: 'misconfigured' }))
   const paypal = paypalClient({ clientId: s.PAYPAL_CLIENT_ID, secret: s.PAYPAL_SECRET, live: s.PAYPAL_LIVE === '1' })
@@ -47,7 +47,7 @@ if (cmd === 'info') {
   })
   const accounts = new Accounts({
     store: new Store(process.env.ACCOUNTS_DB || 'accounts.db'), vaults, paypal,
-    planId: s.PAYPAL_PLAN_ID, webhookId: s.PAYPAL_WEBHOOK_ID,
+    planId: s.PAYPAL_REPLICA_PLAN_ID, webhookId: s.PAYPAL_WEBHOOK_ID,
     shopUrl: process.env.ACCOUNTS_SHOP_URL || 'https://vault.dotrino.com/hosted', log
   })
   const port = Number(process.env.PORT || 8095)

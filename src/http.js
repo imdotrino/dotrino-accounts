@@ -1,14 +1,14 @@
 /**
  * La cara HTTP del servicio. JSON, sin sesiones ni cookies.
  *
- *   GET  /version                  { product, version, protocol }
- *   GET  /price                    lo que cuesta al mes
- *   POST /subscribe                → { id, claim, approveUrl, price }   (el navegador guarda id y claim)
- *   POST /confirm   { id, claim }  de vuelta de PayPal: crea la bóveda si está pagada
- *   POST /status    { id, claim }  cómo va (y el código de activación, solo a quien compró)
- *   POST /mine      { req }        las suscripciones de la cuenta que firma
- *   POST /cancel    { id, req }    cancelar (firmado por la cuenta de la bóveda)
- *   POST /paypal/webhook           los avisos de PayPal (se comprueban con PayPal)
+ *   GET  /version                       { product, version, protocol }
+ *   GET  /price                         lo que cuesta al mes
+ *   POST /subscribe { req }             → { id, approveUrl, price }   (firmado por la cuenta)
+ *   POST /confirm   { id, req }         de vuelta de PayPal: crea la réplica si está pagada
+ *   POST /enroll    { id, invitation, req }  la enrola con la invitación de su bóveda → { code }
+ *   POST /mine      { req }             las suscripciones de la cuenta que firma
+ *   POST /cancel    { id, req }         cancelar
+ *   POST /paypal/webhook                los avisos de PayPal (se comprueban con PayPal)
  *
  * Los errores van con su `code` (el contrato), nunca solo con la frase.
  */
@@ -29,6 +29,7 @@ const STATUS = {
   'sub-not-found': 404, 'stack-not-found': 404, 'not-found': 404,
   'bad-request': 400, 'bad-json': 400, 'bad-version': 400, 'request-mismatch': 400,
   'bad-request-signature': 401, 'bad-webhook-signature': 401, 'replayed': 409, 'subscription-mismatch': 409,
+  'not-ready': 409, 'already-enrolled': 409, 'no-invitation': 400, 'enroll-failed': 502, 'no-code': 504, 'function-error': 502,
   'payments-unavailable': 503, 'provider-error': 502, 'provider-not-found': 502, 'payment-declined': 402, 'bad-id': 400, 'body-too-large': 413
 }
 
@@ -38,9 +39,9 @@ export function makeHandler ({ accounts, version, product = '@dotrino/accounts-s
     res.end(JSON.stringify(obj))
   }
   const routes = {
-    'POST /subscribe': () => accounts.subscribe(),
-    'POST /confirm': (b) => accounts.confirm({ id: b.id, claim: b.claim }),
-    'POST /status': (b) => accounts.status({ id: b.id, claim: b.claim }),
+    'POST /subscribe': (b) => accounts.subscribe({ req: b.req }),
+    'POST /confirm': (b) => accounts.confirm({ id: b.id, req: b.req }),
+    'POST /enroll': (b) => accounts.enroll({ id: b.id, invitation: b.invitation, req: b.req }),
     'POST /mine': (b) => accounts.mine({ req: b.req }),
     'POST /cancel': (b) => accounts.cancel({ id: b.id, req: b.req })
   }

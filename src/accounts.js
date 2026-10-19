@@ -1,51 +1,51 @@
 /**
- * Las cuentas: comprar una bóveda alojada, activarla, renovarla (lo hace PayPal cada mes) y
- * apagarla o volverla a encender según lo pagado (`docs/DISENO.md`).
+ * Las cuentas: comprar una RÉPLICA alojada para la cuenta que ya tienes, enrolarla con tu
+ * invitación, renovarla (lo hace PayPal cada mes) y apagarla o volverla a encender según lo
+ * pagado (`docs/DISENO.md` §8.bis y §9).
  *
- * Dos reglas que ordenan todo esto:
+ * Tres reglas que ordenan todo esto:
  *
  *   · LA FUENTE DE VERDAD DEL COBRO ES PAYPAL. Un webhook solo avisa de que hay que mirar: lo
  *     que se apunta sale de preguntarle a PayPal por la suscripción, nunca del cuerpo del aviso.
- *   · LO QUE SE PIDE SOBRE UNA SUSCRIPCIÓN LO FIRMA SU CUENTA. En cuanto la pila da la cuenta
- *     de la bóveda (`Account`, 64 hex), ver y cancelar son peticiones firmadas por un aparato
- *     de esa cuenta. Antes de eso, solo el navegador que compró (su `claim`) ve el código de
- *     activación.
+ *   · TODO LO PIDE LA CUENTA, FIRMADO. Comprar, confirmar, enrolar, ver y cancelar son
+ *     peticiones firmadas por un aparato de la cuenta del cliente: la réplica es de esa cuenta
+ *     desde el primer momento, y se administra desde el perfil que ya usa.
+ *   · NADA ENTRA AL ACTA SIN INVITACIÓN. La réplica nace vacía y solo se enrola con la
+ *     invitación que saca el dueño en su bóveda y el código que aprueba allí.
  */
-import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto'
+import { randomUUID, randomBytes } from 'node:crypto'
 import { priceWithTax } from '@dotrino/pay'
 import { verifySignedFor } from '@dotrino/identity/assertion'
 import { pubkeyId } from '@dotrino/identity/keyid'
 
 export const AUDIENCE = 'https://accounts.dotrino.com'
 export const FORMAT_V = 1
-/** $5/mes + IVA (15 % en Ecuador). El plan de PayPal se da de alta con esto (`scripts/setup-plan.mjs`). */
-export const PRICE_CENTS = 500
+export const PRODUCT = 'replica'
+/** $3/mes + IVA (15 % en Ecuador). El plan de PayPal se da de alta con esto (`scripts/setup-plan.mjs`). */
+export const PRICE_CENTS = 300
 export const TAX_PERCENT = 15
-export const PRICE = Object.freeze({ ...priceWithTax({ unitCents: PRICE_CENTS, taxPercent: TAX_PERCENT }), taxPercent: TAX_PERCENT, currency: 'USD', interval: 'month' })
+export const PRICE = Object.freeze({ ...priceWithTax({ unitCents: PRICE_CENTS, taxPercent: TAX_PERCENT }), taxPercent: TAX_PERCENT, currency: 'USD', interval: 'month', product: PRODUCT })
 const DAY = 24 * 60 * 60 * 1000
-/** Cuánto vale el código de activación: lo que tarda alguien en volver a mirar su correo. */
-export const ACTIVATION_MS = 7 * DAY
 /** Cuánto se espera a que PayPal apunte el primer cobro antes de dar por hecho que no lo hubo. */
 export const REFUND_WAIT_MS = 3 * DAY
+/** Una réplica pagada que nadie enroló en este tiempo se borra y se devuelve lo cobrado. */
+export const ENROLL_WITHIN_MS = DAY
+/** Cada cuánto, como mucho, se le pregunta a una réplica sin enrolar si ya lo está. */
+const STATUS_EVERY_MS = 10_000
 
 export class AccountsError extends Error {
   constructor (code, message) { super(message); this.code = code }
 }
 const fail = (code, message) => { throw new AccountsError(code, message) }
 
-const hash = (s) => createHash('sha256').update(String(s)).digest()
-const sameClaim = (claim, stored) => typeof claim === 'string' && claim.length >= 32 && timingSafeEqual(hash(claim), Buffer.from(stored, 'hex'))
-/** Base32 sin letras que se confundan: el código se puede tener que teclear. */
-const CODE_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-const activationCode = () => Array.from(randomBytes(24), (b) => CODE_ABC[b % 32]).join('').replace(/(.{4})(?!$)/g, '$1-')
-
 export class Accounts {
   /**
-   * `shopUrl`: la página donde se compra, que es la de la BÓVEDA (`vault.dotrino.com/hosted`):
-   * lo que se compra es una bóveda. Allí vuelve PayPal (`?sub=<id>`) y desde allí se activa.
+   * `shopUrl`: la página donde se compra, que es la de la BÓVEDA (`vault.dotrino.com/hosted`).
+   * Allí vuelve PayPal (`?sub=<id>`) y desde allí se enrola.
    */
   constructor ({ store, vaults, paypal = null, planId = null, webhookId = null, shopUrl = 'https://vault.dotrino.com/hosted', now = Date.now, log = () => {} }) {
     Object.assign(this, { store, vaults, paypal, planId, webhookId, shopUrl, now, log })
+    this.lastStatus = new Map()
   }
 
   #payments () {
@@ -53,93 +53,127 @@ export class Accounts {
     return this.paypal
   }
 
-  #byClaim (id, claim) {
+  /** La fila, si es de la cuenta que firma. Otra cuenta no sabe ni que existe. */
+  #ofAccount (id, account) {
     const row = this.store.get(String(id || ''))
-    if (!row || !sameClaim(claim, row.claim)) fail('sub-not-found', 'no such subscription')
+    if (!row || row.account !== account) fail('sub-not-found', 'no such subscription for this account')
     return row
   }
 
-  /** Lo que se enseña de una suscripción. El código de activación, solo a quien compró. */
-  view (row, { withActivation = false } = {}) {
-    const v = {
-      id: row.id, status: row.status, paidThrough: row.paid_through, stack: row.stack,
-      login: row.login, account: row.account, on: !!row.vault_on, note: row.note, created: row.created
+  /** Lo que se enseña de una suscripción. */
+  view (row) {
+    return {
+      id: row.id, product: row.product, status: row.status, paidThrough: row.paid_through,
+      stack: row.stack, enrolled: !!row.enrolled, device: row.device, on: !!row.vault_on,
+      note: row.note, created: row.created, enrollBefore: row.enrolled ? null : row.created + ENROLL_WITHIN_MS
     }
-    if (withActivation && row.activation && row.activation_until > this.now()) Object.assign(v, { activation: row.activation, activationUntil: row.activation_until })
-    return v
   }
 
-  /** 1. Empieza la compra: PayPal da el enlace para aprobarla. */
-  async subscribe () {
+  /** 1. Empieza la compra, firmada por la cuenta: PayPal da el enlace para aprobarla. */
+  async subscribe ({ req }) {
+    const account = await this.#signed(req, 'subscribe', { product: PRODUCT })
     const paypal = this.#payments()
     const id = randomUUID()
-    const claim = randomBytes(32).toString('base64url')
     const { id: paypalId, approveUrl } = await paypal.createSubscription({
       planId: this.planId, customId: id,
       returnUrl: `${this.shopUrl}?sub=${id}`, cancelUrl: this.shopUrl
     })
     const ts = this.now()
-    this.store.insert({ id, claim: hash(claim).toString('hex'), paypal_id: paypalId, status: 'APPROVAL_PENDING', created: ts, updated: ts })
-    return { id, claim, approveUrl, price: PRICE }
+    this.store.insert({ id, account, product: PRODUCT, paypal_id: paypalId, status: 'APPROVAL_PENDING', created: ts, updated: ts })
+    return { id, approveUrl, price: PRICE }
   }
 
-  /** 2. De vuelta de PayPal: si está activa y es nuestra, se crea la bóveda. Repetirlo no crea otra. */
-  async confirm ({ id, claim }) {
-    let row = this.#byClaim(id, claim)
-    row = await this.refresh(row)
+  /** 2. De vuelta de PayPal: si está activa, se crea la réplica (vacía). Repetirlo no crea otra. */
+  async confirm ({ id, req }) {
+    const account = await this.#signed(req, 'confirm', { id })
+    let row = await this.refresh(this.#ofAccount(id, account))
     if (row.status === 'ACTIVE' && row.stack === 'none') row = await this.#provision(row)
     if (row.stack === 'creating') row = await this.progress(row)
-    return this.view(row, { withActivation: true })
+    return this.view(row)
   }
 
-  /** Lo que pregunta la página mientras se crea la bóveda (tarda unos minutos). */
-  async status ({ id, claim }) {
-    let row = this.#byClaim(id, claim)
+  /**
+   * 3. ENROLARLA con la invitación que el dueño sacó en su bóveda. Devuelve el código que tiene
+   * que aprobar allí. Si no lo aprueba a tiempo, se repite con otra invitación.
+   */
+  async enroll ({ id, invitation, req }) {
+    const account = await this.#signed(req, 'enroll', { id })
+    let row = this.#ofAccount(id, account)
     if (row.stack === 'creating') row = await this.progress(row)
-    return this.view(row, { withActivation: true })
+    if (row.stack !== 'ready') fail('not-ready', `the replica is ${row.stack}, not ready to be enrolled`)
+    if (row.enrolled) fail('already-enrolled', 'this replica is already in the account')
+    if (typeof invitation !== 'string' || !invitation.trim() || invitation.length > 4096) fail('bad-request', 'enroll: no invitation')
+    const r = await this.vaults.invoke(row.vault, { kind: 'enroll', invitation: invitation.trim() })
+    if (!r?.ok) fail(r?.error || 'enroll-failed', `enroll: ${r?.message || r?.error || 'the replica could not start the enrollment'}`)
+    this.store.update(row.id, { device: r.deviceId, updated: this.now() })
+    this.log(`[accounts] ${row.id}: replica ${row.vault} waiting for code approval as ${r.deviceId}`)
+    return { ...this.view(this.store.get(row.id)), code: r.code }
+  }
+
+  /** ¿Ya la aprobó? Se le pregunta a la réplica, como mucho cada pocos segundos. */
+  async #checkEnrolled (row) {
+    if (row.stack !== 'ready' || row.enrolled) return row
+    if (this.now() - (this.lastStatus.get(row.id) || 0) < STATUS_EVERY_MS) return row
+    this.lastStatus.set(row.id, this.now())
+    const st = await this.vaults.invoke(row.vault, { kind: 'status' })
+    if (!st?.ok) { this.log(`[accounts] ${row.id}: replica status failed: ${st?.error} ${st?.message || ''}`); return row }
+    if (!st.enrolled) return row
+    this.store.update(row.id, { enrolled: 1, device: st.deviceId, updated: this.now() })
+    this.log(`[accounts] ${row.id}: replica ${row.vault} enrolled as ${st.deviceId}`)
+    return this.store.get(row.id)
   }
 
   async #provision (row) {
     const vault = 'h' + randomBytes(6).toString('hex')
-    const code = activationCode()
     // Se apunta ANTES de crear la pila: si el proceso muere a mitad, la fila dice qué pila
-    // buscar, en vez de dejar una bóveda pagada sin dueño.
-    this.store.update(row.id, { vault, stack: 'creating', activation: code, activation_until: this.now() + ACTIVATION_MS, updated: this.now() })
+    // buscar, en vez de dejar una réplica pagada sin dueño.
+    this.store.update(row.id, { vault, stack: 'creating', updated: this.now() })
     try {
-      await this.vaults.create({ vault, adminPassword: code })
+      await this.vaults.create({ vault })
     } catch (e) {
       this.store.update(row.id, { stack: 'failed', note: `create: ${e.code || e.name}: ${e.message}`, updated: this.now() })
       this.log(`[accounts] ${row.id}: stack ${vault} not created: ${e.message}`)
-      await this.#giveBack(this.store.get(row.id))
+      await this.#giveBack(this.store.get(row.id), 'the replica could not be created')
       return this.store.get(row.id)
     }
-    this.log(`[accounts] ${row.id}: creating vault ${vault}`)
+    this.log(`[accounts] ${row.id}: creating replica ${vault}`)
     return this.store.get(row.id)
   }
 
-  /** Mira cómo va la pila y apunta la cuenta en cuanto la da. */
+  /** Mira cómo va la pila. */
   async progress (row) {
     const d = await this.vaults.describe(row.vault)
     if (d.state === 'ready') {
-      this.store.update(row.id, { stack: 'ready', login: d.login, account: d.account, vault_on: 1, updated: this.now() })
-      this.log(`[accounts] ${row.id}: vault ${row.vault} ready as ${d.login}`)
+      this.store.update(row.id, { stack: 'ready', vault_on: 1, updated: this.now() })
+      this.log(`[accounts] ${row.id}: replica ${row.vault} ready, waiting for its owner to enroll it`)
       return this.reconcile(this.store.get(row.id))
     }
     if (d.state === 'failed') {
       this.store.update(row.id, { stack: 'failed', note: d.reason, updated: this.now() })
-      this.log(`[accounts] ${row.id}: vault ${row.vault} failed: ${d.reason}`)
-      await this.#giveBack(this.store.get(row.id))
+      this.log(`[accounts] ${row.id}: replica ${row.vault} failed: ${d.reason}`)
+      await this.#giveBack(this.store.get(row.id), 'the replica could not be created')
     }
     return this.store.get(row.id)
   }
 
-  /** Sin bóveda no se cobra: la suscripción se cancela y lo que ya se cobró se devuelve. */
-  async #giveBack (row) {
+  /**
+   * NADIE LA ENROLÓ A TIEMPO: no se deja corriendo ni cobrándose. Se cancela, se devuelve lo
+   * cobrado y se borra la pila (el bucket se queda, vacío de cuenta: no cuesta).
+   */
+  async #expire (row) {
+    this.log(`[accounts] ${row.id}: replica ${row.vault} was not enrolled within ${ENROLL_WITHIN_MS / 3600000} h: removing it`)
+    await this.#giveBack(row, 'the replica was not enrolled in time')
+    await this.vaults.remove(row.vault)
+    this.store.update(row.id, { stack: 'deleted', vault_on: 0, note: 'not enrolled in time', updated: this.now() })
+  }
+
+  /** Sin réplica no se cobra: la suscripción se cancela y lo que ya se cobró se devuelve. */
+  async #giveBack (row, reason) {
     if (!row.paypal_id || !this.paypal) return
     try {
-      await this.paypal.cancelSubscription(row.paypal_id, 'the vault could not be created')
+      await this.paypal.cancelSubscription(row.paypal_id, reason)
       await this.refresh(row)
-    } catch (e) { this.log(`[accounts] ${row.id}: could not cancel after a failed vault: ${e.message}`) }
+    } catch (e) { this.log(`[accounts] ${row.id}: could not cancel (${reason}): ${e.message}`) }
     this.store.update(row.id, { refund: 'pending', updated: this.now() })
     try {
       await this.settleRefund(this.store.get(row.id))
@@ -147,15 +181,15 @@ export class Accounts {
   }
 
   /**
-   * Devuelve lo cobrado a una suscripción cuya bóveda no se creó. PayPal apunta el primer cobro
-   * unos minutos después de aprobar, así que justo al fallar puede no haber nada que devolver
+   * Devuelve lo cobrado a una suscripción sin réplica. PayPal apunta el primer cobro unos
+   * minutos después de aprobar, así que justo al fallar puede no haber nada que devolver
    * todavía: queda 'pending' y el barrido lo vuelve a mirar.
    */
   async settleRefund (row) {
     const pays = await this.#payments().subscriptionPayments(row.paypal_id, { since: row.created - DAY, until: this.now() })
     const due = pays.filter((p) => p.status === 'COMPLETED')
     for (const p of due) {
-      const r = await this.paypal.refundCapture(p.id, { note: 'Your vault could not be created.' })
+      const r = await this.paypal.refundCapture(p.id, { note: 'Your replica could not be set up.' })
       this.log(`[accounts] ${row.id}: refunded ${p.amount} (${p.id} → ${r.id} ${r.status})`)
     }
     if (due.length || pays.some((p) => p.status === 'REFUNDED')) this.store.update(row.id, { refund: 'done', updated: this.now() })
@@ -211,14 +245,21 @@ export class Accounts {
   /** Las suscripciones de la cuenta que firma. */
   async mine ({ req }) {
     const account = await this.#signed(req, 'mine')
-    return this.store.ofAccount(account).map((r) => this.view(r))
+    const out = []
+    for (let row of this.store.ofAccount(account)) {
+      try {
+        if (row.stack === 'creating') row = await this.progress(row)
+        row = await this.#checkEnrolled(row)
+      } catch (e) { this.log(`[accounts] mine ${row.id}: ${e.code || ''} ${e.message}`) }
+      out.push(this.view(row))
+    }
+    return out
   }
 
   /** Cancelar: sigue encendida hasta el fin de lo pagado, y entonces se apaga (no se borra). */
   async cancel ({ id, req }) {
     const account = await this.#signed(req, 'cancel', { id })
-    const row = this.store.get(String(id))
-    if (!row || row.account !== account) fail('sub-not-found', 'no such subscription for this account')
+    const row = this.#ofAccount(id, account)
     if (row.status === 'ACTIVE' || row.status === 'SUSPENDED') await this.#payments().cancelSubscription(row.paypal_id)
     return this.view(await this.refresh(row))
   }
@@ -240,16 +281,19 @@ export class Accounts {
   }
 
   /**
-   * Lo que corre solo: termina las pilas a medio crear, pregunta a PayPal por cada suscripción
-   * (el webhook avisa antes, pero no es la única fuente) y olvida los códigos vencidos.
-   * Un fallo en una fila se dice y no para las demás.
+   * Lo que corre solo: termina las pilas a medio crear, borra las réplicas que nadie enroló a
+   * tiempo, reintenta las devoluciones y pregunta a PayPal por cada suscripción (el webhook
+   * avisa antes, pero no es la única fuente). Un fallo en una fila se dice y no para las demás.
    */
   async sweep () {
     let n = 0
-    for (const row of this.store.live()) {
+    for (let row of this.store.live()) {
       try {
-        if (row.activation && row.activation_until <= this.now()) this.store.update(row.id, { activation: null, activation_until: null })
-        if (row.stack === 'creating') await this.progress(row)
+        if (row.stack === 'creating') row = await this.progress(row)
+        if (row.stack === 'ready' && !row.enrolled) {
+          row = await this.#checkEnrolled(row)
+          if (!row.enrolled && this.now() - row.created > ENROLL_WITHIN_MS) { await this.#expire(row); n++; continue }
+        }
         if (row.refund === 'pending') await this.settleRefund(row)
         if (row.paypal_id && row.status !== 'APPROVAL_PENDING') await this.refresh(this.store.get(row.id))
         n++

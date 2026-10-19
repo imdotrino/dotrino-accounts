@@ -1,5 +1,5 @@
 /**
- * Las bóvedas alojadas, en AWS: una pila de CloudFormation por bóveda, con la plantilla de la
+ * Las réplicas alojadas, en AWS: una pila de CloudFormation por réplica, con la plantilla de la
  * release de `dotrino-vault` (`lambda/template.yaml`) y la llave de KMS COMPARTIDA
  * (`SharedKeyArn`: $1/mes en total, y cada bóveda solo puede usarla con su nombre).
  *
@@ -8,8 +8,8 @@
  *
  * Los permisos van en dos sitios (`aws/`): la llave del servicio solo crea y mira pilas
  * `dotrino-vault-h*` y enciende o apaga esas funciones; lo que la pila crea lo crea el ROL de
- * CloudFormation (`cfnRoleArn`), acotado a los mismos nombres. Borrar una pila no lo puede nadie
- * desde aquí: apagar nunca borra.
+ * CloudFormation (`cfnRoleArn`), acotado a los mismos nombres. Apagar nunca borra; borrar
+ * (`remove`) es solo para una réplica que nadie enroló, que no tiene nada de nadie.
  *
  * Los roles de la bóveda llevan un LÍMITE de permisos (`roleBoundaryArn`, `aws/vault-role-
  * boundary.json`), y el rol de CloudFormation solo puede crear roles que lo lleven. Sin eso,
@@ -20,8 +20,8 @@
  * crea en la cuenta de Dotrino exactamente lo que dice la release, y nada más.
  */
 import { createHash } from 'node:crypto'
-import { CloudFormationClient, CreateStackCommand, DescribeStacksCommand, DescribeStackEventsCommand } from '@aws-sdk/client-cloudformation'
-import { LambdaClient, PutFunctionConcurrencyCommand, DeleteFunctionConcurrencyCommand } from '@aws-sdk/client-lambda'
+import { CloudFormationClient, CreateStackCommand, DeleteStackCommand, DescribeStacksCommand, DescribeStackEventsCommand } from '@aws-sdk/client-cloudformation'
+import { LambdaClient, InvokeCommand, PutFunctionConcurrencyCommand, DeleteFunctionConcurrencyCommand } from '@aws-sdk/client-lambda'
 
 export const stackName = (vault) => `dotrino-vault-${vault}`
 export const functionName = (vault) => `dotrino-vault-${vault}`
@@ -54,7 +54,8 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
   }
 
   return {
-    async create ({ vault, adminPassword }) {
+    /** Una RÉPLICA vacía (`Mode: replica`): nace sin cuenta y espera a que su dueño la enrole. */
+    async create ({ vault }) {
       await cfn.send(new CreateStackCommand({
         StackName: stackName(vault),
         TemplateBody: await templateBody(),
@@ -62,7 +63,7 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
         RoleARN: cfnRoleArn,
         Parameters: [
           { ParameterKey: 'Name', ParameterValue: vault },
-          { ParameterKey: 'AdminPassword', ParameterValue: adminPassword },
+          { ParameterKey: 'Mode', ParameterValue: 'replica' },
           { ParameterKey: 'SharedKeyArn', ParameterValue: sharedKeyArn },
           { ParameterKey: 'PermissionsBoundary', ParameterValue: roleBoundaryArn }
         ],
@@ -70,7 +71,7 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
       }))
     },
 
-    /** @returns {Promise<{ state:'creating'|'ready'|'failed', login?:string, account?:string, reason?:string }>} */
+    /** @returns {Promise<{ state:'creating'|'ready'|'failed', reason?:string }>} */
     async describe (vault) {
       const r = await cfn.send(new DescribeStacksCommand({ StackName: stackName(vault) }))
       const s = r.Stacks?.[0]
@@ -78,11 +79,23 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
       if (/_IN_PROGRESS$/.test(s.StackStatus) && !/ROLLBACK/.test(s.StackStatus)) return { state: 'creating' }
       if (s.StackStatus === 'CREATE_COMPLETE' || s.StackStatus === 'UPDATE_COMPLETE') {
         const out = Object.fromEntries((s.Outputs || []).map((o) => [o.OutputKey, o.OutputValue]))
-        if (!out.Login || !/^[0-9a-f]{64}$/.test(out.Account || '')) throw Object.assign(new Error(`vaults: stack ${vault} has no Login/Account outputs (template too old?)`), { code: 'stack-outputs' })
-        return { state: 'ready', login: out.Login, account: out.Account }
+        if (out.Mode !== 'replica') throw Object.assign(new Error(`vaults: stack ${vault} is not a replica (Mode ${out.Mode}; template too old?)`), { code: 'stack-outputs' })
+        return { state: 'ready' }
       }
       return { state: 'failed', reason: `${s.StackStatus}${s.StackStatusReason ? ': ' + s.StackStatusReason : ''}${await firstFailure(vault)}` }
     },
+
+    /** Le habla a la función (`{ kind:'enroll' }`, `{ kind:'status' }`) y devuelve lo que conteste. */
+    async invoke (vault, payload) {
+      const r = await lambda.send(new InvokeCommand({ FunctionName: functionName(vault), InvocationType: 'RequestResponse', Payload: Buffer.from(JSON.stringify(payload)) }))
+      if (r.FunctionError) throw Object.assign(new Error(`vaults: ${vault} failed on ${payload.kind}: ${r.FunctionError}`), { code: 'function-error' })
+      return JSON.parse(Buffer.from(r.Payload || '').toString('utf8') || 'null')
+    }
+
+    /** Borra la pila (las réplicas que nadie enroló). El bucket se queda: lo retiene la plantilla. */
+    async remove (vault) {
+      await cfn.send(new DeleteStackCommand({ StackName: stackName(vault), RoleARN: cfnRoleArn }))
+    }
 
     async setOn (vault, on) {
       if (on) await lambda.send(new DeleteFunctionConcurrencyCommand({ FunctionName: functionName(vault) }))

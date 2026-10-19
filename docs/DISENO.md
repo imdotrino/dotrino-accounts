@@ -191,29 +191,31 @@ fila nace ya atada a `account`.
 > réplica alojada no es la excepción: canjea una invitación y su código se aprueba como el de
 > cualquier aparato. (Se descartó admitirla por su llave sin código.)
 
-1. **La invitación la saca el cliente en su bóveda**: `dotrino-vault pair --scope replica --quiet`
-   o el botón «Añadir réplica alojada» de la consola, que hace lo mismo.
-2. **La compra la lleva**: `POST /subscribe {product:'replica', invitation, req}`, con `req`
-   firmado por la cuenta. `dotrino-accounts` comprueba que la invitación es de ESA cuenta antes
-   de cobrar nada (el `hello` de la invitación dice de qué bóveda es, `vaultHello`; ojo, gasta
-   la cita: se pasa a la pila ya enriquecida).
-3. **La pila la canjea en su primer arranque** (`Mode: replica`, parámetro `Invitation`,
-   NoEcho). La réplica envía su alta con un código aleatorio, igual que hoy.
-4. **El código sale por la pila sin esperar**: el recurso del primer arranque contesta a
-   CloudFormation en cuanto la bóveda le pide el código (Outputs `DeviceId` y `PairingCode`), y
-   la misma invocación sigue esperando el «enrolado» hasta 12 minutos. `dotrino-accounts` lo lee
-   y la página lo enseña; la consola del cliente lo enseña junto a «pendiente».
-5. **El cliente lo aprueba en su bóveda**: `dotrino-vault approve <código>` o en la consola.
-   La réplica guarda su enlace en S3 y ya es una réplica más.
+Primero se paga y después se enrola, porque una invitación caduca a los **5 minutos**
+(`PAIRING_TTL_MS`) y PayPal más la creación de la pila se los comen:
+
+1. **Compra firmada por la cuenta**: `POST /subscribe {req}` (`op:'subscribe'`,
+   `product:'replica'`). La fila nace atada a `account`. PayPal vuelve a la página, que confirma
+   (`POST /confirm {id, req}`) y la réplica se crea **vacía** (`Mode: replica`).
+2. **La invitación la saca el cliente en su bóveda** cuando la réplica ya está lista:
+   `dotrino-vault pair --scope replica --quiet`, o el botón de la consola que hace lo mismo.
+3. **La página la manda**: `POST /enroll {id, invitation, req}`. `dotrino-accounts` se la pasa a
+   la función (`{ kind:'enroll' }`): la réplica la canjea, pide su alta y deja el código en su
+   almacén; la función lo devuelve (`{ deviceId, code }`) y la página lo enseña.
+4. **El cliente aprueba el código en su bóveda**: `dotrino-vault approve <código>` o en la
+   consola. La réplica guarda su enlace, recibe el acta y los sobres y registra su timbre, que es
+   de SU llave (websocket-proxy ≥ 1.8.0).
+5. **`/mine`** pregunta a la réplica si ya está enrolada (`{ kind:'status' }`, como mucho cada
+   10 s) y lo enseña.
 
 **Si falla** (no se aprobó a tiempo, invitación caducada o gastada):
 
-- **Reenrolar**: el cliente saca otra invitación y la página la manda; `dotrino-accounts`
-  actualiza la pila con la `Invitation` nueva (`UpdateStack`) y el recurso vuelve a canjear.
-  Mismo flujo, mismo código nuevo.
+- **Reenrolar**: el cliente saca otra invitación y la página la manda otra vez (paso 3). Una
+  réplica ya enrolada no se vuelve a enrolar.
 - **O se borra el despliegue**: si a las 24 h no hay réplica enrolada, se cancela la suscripción
-  en PayPal y se borra la pila (`DeleteStack`, solo de pilas de réplica `dotrino-vault-r*`; el
-  bucket vacío se queda, no cuesta). Nada queda corriendo ni cobrándose sin réplica.
+  en PayPal, se devuelve lo cobrado y se borra la pila (`DeleteStack`; el bucket se queda, no
+  cuesta). Nada queda corriendo ni cobrándose sin réplica. Las pilas siguen siendo
+  `dotrino-vault-h*`: así valen los mismos permisos y el mismo límite.
 
 La segunda bóveda (§8.bis) pasa por el mismo camino, con `join` en vez de `replica enroll`.
 
@@ -221,10 +223,10 @@ La segunda bóveda (§8.bis) pasa por el mismo camino, con `join` en vez de `rep
 
 | Pieza | Cambio |
 |---|---|
-| `dotrino-vault/lambda` | `Mode: replica` en la plantilla (sin perfil ni maestra) con `Invitation`; el primer arranque canjea, da `DeviceId`/`PairingCode` y espera el «enrolado»; las sesiones corren `replica run` |
+| `dotrino-vault/lambda` | HECHO (vaultd 0.166.0): `Mode: replica`; `{ kind:'enroll' }` y `{ kind:'status' }`; las sesiones corren el replicador |
 | `dotrino-vault` (consola) | botón «Añadir réplica alojada» (saca la invitación y abre la compra) y el pendiente con su código |
-| `websocket-proxy` | el timbre hoy se guarda para la CUENTA (`push-subscribe` `kind:'wake'` → `profileId`), y una réplica no entra como la cuenta: se identifica con SU llave, y el cliente le escribe a esa llave cuando la bóveda no contesta (`fetchSecrets`, `targets`). Hace falta un timbre para la llave propia, firmado por ella: un mensaje encolado para la réplica la despierta |
-| `dotrino-accounts` | quitar el modo de perfil nuevo; `product: 'replica'` (y `'vault'` cuando §5 exista); la compra va firmada por la cuenta, con la invitación; reenrolar (`UpdateStack`) y borrar a las 24 h; plan de PayPal de $3,45 |
+| `websocket-proxy` | HECHO (1.8.0, proxy-client 0.39.0: `registerWake({ self })`). Antes: el timbre se guardaba para la CUENTA (`push-subscribe` `kind:'wake'` → `profileId`), y una réplica no entra como la cuenta: se identifica con SU llave, y el cliente le escribe a esa llave cuando la bóveda no contesta (`fetchSecrets`, `targets`). Hace falta un timbre para la llave propia, firmado por ella: un mensaje encolado para la réplica la despierta |
+| `dotrino-accounts` | HECHO (0.3.0): fuera el modo de perfil nuevo; `product: 'replica'` (y `'vault'` cuando §5 exista); todo firmado por la cuenta; `/enroll`; borrar a las 24 h; plan de PayPal de $3,45 (`PAYPAL_REPLICA_PLAN_ID`) |
 
 ## 10. Abierto
 
