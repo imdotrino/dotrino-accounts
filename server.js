@@ -10,7 +10,7 @@
  * Todo lo de configurar sale del cajón `accounts`: PayPal (PAYPAL_CLIENT_ID, PAYPAL_SECRET,
  * PAYPAL_LIVE, PAYPAL_PLAN_ID, PAYPAL_WEBHOOK_ID) y AWS (AWS_ACCESS_KEY_ID,
  * AWS_SECRET_ACCESS_KEY, AWS_REGION, VAULT_TEMPLATE_URL, VAULT_TEMPLATE_SHA256,
- * VAULT_SHARED_KEY_ARN, VAULT_CFN_ROLE_ARN). Sin la bóveda no arranca: no hay con qué cobrar ni dónde crear nada.
+ * VAULT_SHARED_KEY_ARN, VAULT_CFN_ROLE_ARN, VAULT_ROLE_BOUNDARY_ARN). Sin la bóveda no arranca: no hay con qué cobrar ni dónde crear nada.
  */
 import http from 'node:http'
 import { readFileSync } from 'node:fs'
@@ -36,14 +36,14 @@ if (cmd === 'info') {
 } else if (cmd === 'serve') {
   const identity = await loadServiceIdentity({ log }).catch(die)
   const s = await loadSecrets(identity, { log }).catch(die)
-  const need = ['PAYPAL_CLIENT_ID', 'PAYPAL_SECRET', 'PAYPAL_PLAN_ID', 'PAYPAL_WEBHOOK_ID', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'VAULT_TEMPLATE_URL', 'VAULT_TEMPLATE_SHA256', 'VAULT_SHARED_KEY_ARN', 'VAULT_CFN_ROLE_ARN']
+  const need = ['PAYPAL_CLIENT_ID', 'PAYPAL_SECRET', 'PAYPAL_PLAN_ID', 'PAYPAL_WEBHOOK_ID', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'VAULT_TEMPLATE_URL', 'VAULT_TEMPLATE_SHA256', 'VAULT_SHARED_KEY_ARN', 'VAULT_CFN_ROLE_ARN', 'VAULT_ROLE_BOUNDARY_ARN']
   const missing = need.filter((k) => !s[k])
   if (missing.length) die(Object.assign(new Error(`drawer "accounts" lacks ${missing.join(', ')}`), { code: 'misconfigured' }))
   const paypal = paypalClient({ clientId: s.PAYPAL_CLIENT_ID, secret: s.PAYPAL_SECRET, live: s.PAYPAL_LIVE === '1' })
   const vaults = awsVaults({
     region: s.AWS_REGION,
     credentials: { accessKeyId: s.AWS_ACCESS_KEY_ID, secretAccessKey: s.AWS_SECRET_ACCESS_KEY },
-    templateUrl: s.VAULT_TEMPLATE_URL, templateSha256: s.VAULT_TEMPLATE_SHA256, sharedKeyArn: s.VAULT_SHARED_KEY_ARN, cfnRoleArn: s.VAULT_CFN_ROLE_ARN
+    templateUrl: s.VAULT_TEMPLATE_URL, templateSha256: s.VAULT_TEMPLATE_SHA256, sharedKeyArn: s.VAULT_SHARED_KEY_ARN, cfnRoleArn: s.VAULT_CFN_ROLE_ARN, roleBoundaryArn: s.VAULT_ROLE_BOUNDARY_ARN
   })
   const accounts = new Accounts({
     store: new Store(process.env.ACCOUNTS_DB || 'accounts.db'), vaults, paypal,

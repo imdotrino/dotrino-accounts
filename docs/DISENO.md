@@ -214,11 +214,15 @@ el login con contraseña del §5 (el código de activación hace de contraseña 
   bóveda alojada nace con su propia cuenta). Las peticiones van firmadas como las del cliente, y
   las acepta solo la cuenta de Dotrino. **La página lista los aparatos `accounts` del acta de
   Dotrino** —puede haber varios— y al abrir uno se despliega lo que administra ese.
-- **Límite de permisos para el rol de CloudFormation**: hoy `dotrino-accounts-cfn` puede crear
-  roles `dotrino-vault-h*` con cualquier política dentro y pasárselos a una Lambda, así que con la
-  llave de `dotrino-accounts` y otra plantilla se puede subir de privilegios. Se cierra con un
-  *permissions boundary*: el rol solo crea roles que lo lleven, y la plantilla de la bóveda se lo
-  pone (versión nueva de `dotrino-vault/lambda`).
+- **Lo que todavía puede la llave del servicio, con el límite puesto** (2026-10-19). Los roles de
+  las pilas llevan el límite `dotrino-vault-boundary` (`aws/vault-role-boundary.json`) y el rol de
+  CloudFormation solo crea roles que lo lleven, así que ya no se puede fabricar un rol con más
+  permisos. Pero el límite es el mismo para todas las bóvedas: quien robe la llave del servicio y
+  monte otra plantilla puede crear una Lambda que lea los buckets `dotrino-vault-h*` y use la
+  llave compartida con el nombre de OTRA bóveda en el contexto. Lo que sacaría es el disco
+  cifrado de esa bóveda, no la maestra (que va sellada con la contraseña del cliente, fase 3).
+  Cerrarlo del todo pide atar el rol a SU bóveda (etiqueta del rol = nombre, y el límite con
+  `${aws:PrincipalTag/…}`), con la condición de que nadie pueda poner la etiqueta de otra.
 
 - **Factura del SRI** por cada cobro mensual: emisor autorizado (facturero), aparte del cobro.
 - **Moneda y precio**: $5 + 15 % IVA = **$5.75/mes**, cobrado en USD.

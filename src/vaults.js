@@ -11,6 +11,11 @@
  * CloudFormation (`cfnRoleArn`), acotado a los mismos nombres. Borrar una pila no lo puede nadie
  * desde aquí: apagar nunca borra.
  *
+ * Los roles de la bóveda llevan un LÍMITE de permisos (`roleBoundaryArn`, `aws/vault-role-
+ * boundary.json`), y el rol de CloudFormation solo puede crear roles que lo lleven. Sin eso,
+ * con la llave del servicio y otra plantilla se podía crear un rol con cualquier permiso y
+ * dárselo a una Lambda.
+ *
  * La plantilla se baja de una URL fija y se comprueba su sha256 antes de usarla: el servicio
  * crea en la cuenta de Dotrino exactamente lo que dice la release, y nada más.
  */
@@ -21,8 +26,8 @@ import { LambdaClient, PutFunctionConcurrencyCommand, DeleteFunctionConcurrencyC
 export const stackName = (vault) => `dotrino-vault-${vault}`
 export const functionName = (vault) => `dotrino-vault-${vault}`
 
-export function awsVaults ({ region, credentials, templateUrl, templateSha256, sharedKeyArn, cfnRoleArn, fetch = globalThis.fetch }) {
-  for (const [k, v] of Object.entries({ region, templateUrl, templateSha256, sharedKeyArn, cfnRoleArn })) {
+export function awsVaults ({ region, credentials, templateUrl, templateSha256, sharedKeyArn, cfnRoleArn, roleBoundaryArn, fetch = globalThis.fetch }) {
+  for (const [k, v] of Object.entries({ region, templateUrl, templateSha256, sharedKeyArn, cfnRoleArn, roleBoundaryArn })) {
     if (!v) throw Object.assign(new Error(`vaults: ${k} is required`), { code: 'vaults-misconfigured' })
   }
   const cfn = new CloudFormationClient({ region, credentials })
@@ -58,7 +63,8 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
         Parameters: [
           { ParameterKey: 'Name', ParameterValue: vault },
           { ParameterKey: 'AdminPassword', ParameterValue: adminPassword },
-          { ParameterKey: 'SharedKeyArn', ParameterValue: sharedKeyArn }
+          { ParameterKey: 'SharedKeyArn', ParameterValue: sharedKeyArn },
+          { ParameterKey: 'PermissionsBoundary', ParameterValue: roleBoundaryArn }
         ],
         Tags: [{ Key: 'dotrino', Value: 'hosted-vault' }]
       }))

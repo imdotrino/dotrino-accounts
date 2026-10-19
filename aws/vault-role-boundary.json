@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "logs", "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:us-east-1:147464502454:log-group:/aws/lambda/dotrino-vault-h*" },
+    { "Sid": "objects", "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::dotrino-vault-h*/*" },
+    { "Sid": "list", "Effect": "Allow", "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::dotrino-vault-h*" },
+    { "Sid": "sharedKey", "Effect": "Allow", "Action": ["kms:Encrypt", "kms:Decrypt"],
+      "Resource": "arn:aws:kms:us-east-1:147464502454:key/fcd85646-3ec0-483c-89b7-bb49d27fab8c",
+      "Condition": { "Null": { "kms:EncryptionContext:vault": "false" } } },
+    { "Sid": "wake", "Effect": "Allow", "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:us-east-1:147464502454:function:dotrino-vault-h*" }
+  ]
+}

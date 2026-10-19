@@ -19,35 +19,60 @@
       ]
     },
     {
-      "Sid": "roles",
+      "Sid": "bounded",
       "Effect": "Allow",
       "Action": [
         "iam:CreateRole",
+        "iam:PutRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::147464502454:role/dotrino-vault-h*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::147464502454:policy/dotrino-vault-boundary"
+        }
+      }
+    },
+    {
+      "Sid": "roles",
+      "Effect": "Allow",
+      "Action": [
         "iam:DeleteRole",
         "iam:GetRole",
-        "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
         "iam:GetRolePolicy",
         "iam:TagRole",
         "iam:UntagRole",
-        "iam:PassRole",
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
-        "iam:ListInstanceProfilesForRole"
+        "iam:ListInstanceProfilesForRole",
+        "iam:DetachRolePolicy"
       ],
       "Resource": "arn:aws:iam::147464502454:role/dotrino-vault-h*"
+    },
+    {
+      "Sid": "passToLambda",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::147464502454:role/dotrino-vault-h*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
     },
     {
       "Sid": "basicExecution",
       "Effect": "Allow",
       "Action": [
-        "iam:AttachRolePolicy",
-        "iam:DetachRolePolicy"
+        "iam:AttachRolePolicy"
       ],
       "Resource": "arn:aws:iam::147464502454:role/dotrino-vault-h*",
       "Condition": {
         "ArnEquals": {
           "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        },
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::147464502454:policy/dotrino-vault-boundary"
         }
       }
     },
