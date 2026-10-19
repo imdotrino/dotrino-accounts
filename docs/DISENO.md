@@ -39,10 +39,15 @@ aparato sigue siendo bóveda por defecto (`CLAUDE.md`, «El APARATO cumple el ro
 
 ## 3. Flujo de compra
 
+> **La página de compra es la de la bóveda** (dueño, 2026-10-18: *«la página de compras debería
+> accederse desde vault, ya que es para comprar vaults»*): `vault.dotrino.com/hosted`
+> (`dotrino-vault/web/src/Hosted.vue`). `dotrino-accounts` es solo la API; su raíz redirige allí.
+> Uso para la gente: `wiki.dotrino.com/vault/nube/`.
+
 ```
-navegador ──1 POST /subscribe──▶ accounts ──▶ PayPal (crea la suscripción, plan $5.75/mes)
+vault.dotrino.com/hosted ──1 POST /subscribe──▶ accounts ──▶ PayPal (crea la suscripción, plan $5.75/mes)
     │◀──────────── approveUrl ───────────────┘
-    ├──2 aprueba en PayPal──▶ vuelve a /subscribed?subscription_id=…
+    ├──2 aprueba en PayPal──▶ vuelve a vault.dotrino.com/hosted?sub=<id>
     ├──3 POST /confirm ─────▶ accounts: GET la suscripción en PayPal → ACTIVE y el plan nuestro
     │                         → crea la pila (CloudFormation, Name = id interno, sin contraseña)
     │                         → genera un CÓDIGO DE ACTIVACIÓN de un solo uso
