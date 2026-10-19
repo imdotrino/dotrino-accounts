@@ -16,7 +16,8 @@ import { createRequire } from 'node:module'
 import { Identity } from '@dotrino/identity/node'
 import { pubkeyId } from '@dotrino/identity/keyid'
 import { Store } from '../src/store.js'
-import { Accounts, AUDIENCE, FORMAT_V, PRODUCT } from '../src/accounts.js'
+import { Accounts, AUDIENCE, FORMAT_V, PRODUCT, COMP } from '../src/accounts.js'
+import { makeAdmin } from '../src/admin.js'
 import { makeHandler } from '../src/http.js'
 
 const require = createRequire(import.meta.url)
@@ -329,4 +330,152 @@ test('una base de antes de la réplica no se abre: se dice', () => {
   db.exec('CREATE TABLE subs (id TEXT PRIMARY KEY, claim TEXT NOT NULL)')
   db.close()
   assert.throws(() => new Store(file), { code: 'old-store' })
+})
+
+// ───────────────────────── Administración (§10) ─────────────────────────
+
+const BY = 'AD11-0000'
+
+test('admin: lista todas las cuentas, enciende y apaga a mano por encima del pago, y suelta el interruptor', async () => {
+  const t = setup()
+  const { id, vault } = await bought(t)
+  await subscribe(t, beto)
+  const list = await t.accounts.adminList({ by: BY })
+  assert.equal(list.length, 2, 'las de todas las cuentas')
+  const a = list.find((r) => r.id === id)
+  assert.equal(a.account, ana.account)
+  assert.equal(a.vault, vault)
+  assert.equal(a.paypalId, t.accounts.store.get(id).paypal_id)
+  assert.equal(a.adminOn, null)
+  assert.equal(a.enrolled, true)
+
+  const off = await t.accounts.adminSetOn({ id, on: false, by: BY })
+  assert.equal(off.on, false)
+  assert.equal(off.adminOn, false)
+  assert.equal(t.vaults.stacks.get(vault).on, false)
+  await t.accounts.sweep()
+  assert.equal(t.vaults.stacks.get(vault).on, false, 'pagada, pero el barrido no la vuelve a encender')
+
+  const released = await t.accounts.adminSetOn({ id, on: null, by: BY })
+  assert.equal(released.adminOn, null)
+  assert.equal(t.vaults.stacks.get(vault).on, true, 'suelta, manda el pago: está pagada')
+
+  await assert.rejects(t.accounts.adminSetOn({ id, on: 'yes', by: BY }), { code: 'bad-request' })
+  await assert.rejects(t.accounts.adminSetOn({ id: 'nope', on: true, by: BY }), { code: 'sub-not-found' })
+  const pending = list.find((r) => r.id !== id)
+  await assert.rejects(t.accounts.adminSetOn({ id: pending.id, on: true, by: BY }), { code: 'not-ready' })
+})
+
+test('admin: devolver el último cobro, y cancelar la suscripción', async () => {
+  const t = setup()
+  const { id } = await bought(t)
+  const pid = t.accounts.store.get(id).paypal_id
+  await assert.rejects(t.accounts.adminRefund({ id, by: BY }), { code: 'nothing-to-refund' })
+  t.paypal.payments.set(pid, [
+    { id: 'CAP0000001', status: 'COMPLETED', amount: '3.45', time: clock - 40 * DAY },
+    { id: 'CAP0000002', status: 'COMPLETED', amount: '3.45', time: clock - 10 * DAY }
+  ])
+  const r = await t.accounts.adminRefund({ id, by: BY })
+  assert.deepEqual(t.paypal.refunds, ['CAP0000002'], 'solo el último')
+  assert.equal(r.refunded.capture, 'CAP0000002')
+  assert.equal(r.refund, 'done')
+  assert.equal(t.paypal.subs.get(pid).status, 'CANCELLED', 'devolver también cancela')
+})
+
+test('admin: añadir una réplica a una cuenta, sin cargo; el cliente la ve y la enrola con su invitación', async () => {
+  const t = setup()
+  await assert.rejects(t.accounts.adminAddReplica({ account: 'ABC', by: BY }), { code: 'bad-account' })
+  await assert.rejects(t.accounts.adminAddReplica({ account: ana.account.toUpperCase(), by: BY }), { code: 'bad-account' })
+  const added = await t.accounts.adminAddReplica({ account: ana.account, by: BY })
+  assert.equal(added.status, COMP)
+  assert.equal(added.paypalId, null)
+  assert.equal(added.stack, 'creating')
+  assert.equal(t.vaults.stacks.get(added.vault).owner, ana.account, 'nace con Owner = esa cuenta')
+  assert.deepEqual(t.paypal.subs.size, 0, 'no pasa por PayPal')
+
+  assert.deepEqual(await mine(t, beto), [], 'otra cuenta no la ve')
+  t.vaults.finish(added.vault)
+  const [m] = await mine(t)
+  assert.equal(m.id, added.id)
+  assert.equal(m.status, COMP)
+  assert.equal(m.stack, 'ready')
+  assert.equal(m.on, true, 'sin cargo está encendida')
+  const e = await enroll(t, added.id)
+  assert.equal(e.code, '123456')
+  t.vaults.approve(added.vault)
+  clock += 11_000
+  assert.equal((await mine(t))[0].enrolled, true)
+
+  // No es una suscripción: confirmar o cancelar lo dicen con su código, y el barrido no le pregunta a PayPal.
+  await assert.rejects(confirm(t, added.id), { code: 'no-subscription' })
+  await assert.rejects(t.accounts.cancel({ id: added.id, req: await req(ana, { op: 'cancel', id: added.id }) }), { code: 'no-subscription' })
+  await assert.rejects(t.accounts.adminRefund({ id: added.id, by: BY }), { code: 'no-subscription' })
+  await t.accounts.sweep()
+  assert.equal(t.vaults.stacks.get(added.vault).on, true)
+})
+
+test('admin: borrar una réplica cancela la suscripción viva y borra la pila', async () => {
+  const t = setup()
+  const { id, vault } = await bought(t)
+  const pid = t.accounts.store.get(id).paypal_id
+  const r = await t.accounts.adminRemove({ id, by: BY })
+  assert.equal(r.stack, 'deleted')
+  assert.equal(r.on, false)
+  assert.equal(t.vaults.stacks.get(vault).removed, true)
+  assert.equal(t.paypal.subs.get(pid).status, 'CANCELLED')
+  await assert.rejects(t.accounts.adminRemove({ id, by: BY }), { code: 'already-deleted' })
+  const { id: unpaid } = await subscribe(t)
+  await assert.rejects(t.accounts.adminRemove({ id: unpaid, by: BY }), { code: 'no-stack' })
+})
+
+test('admin por la sesión: solo con `admin` en el acta, preguntado en cada petición', async () => {
+  const t = setup()
+  await bought(t)
+  const caps = new Map([['ADMIN', { ok: true, seq: 7 }], ['PHONE', { ok: false, code: 'missing-cap' }], ['STRANGER', { ok: false, code: 'not-in-record' }]])
+  const asked = []
+  const logs = []
+  const checkCap = async (pub, cap) => { asked.push([pub, cap]); return caps.get(pub) ?? { ok: false, code: 'no-record' } }
+  const admin = makeAdmin({ accounts: t.accounts, checkCap, log: (l) => logs.push(l) })
+  const pub = (n) => JSON.stringify({ kty: 'EC', n })
+  caps.set(pub('a'), caps.get('ADMIN')); caps.set(pub('p'), caps.get('PHONE')); caps.set(pub('s'), caps.get('STRANGER'))
+
+  assert.equal(await admin(pub('a'), { type: 'other' }), null, 'lo que no es de administración no se contesta aquí')
+  const ok = await admin(pub('a'), { type: 'admin', rid: 1, op: 'list' })
+  assert.equal(ok.type, 'admin.result')
+  assert.equal(ok.rid, 1)
+  assert.equal(ok.ok, true)
+  assert.equal(ok.result.length, 1)
+
+  const no = await admin(pub('p'), { type: 'admin', rid: 2, op: 'list' })
+  assert.deepEqual([no.ok, no.code, no.reason, no.rid], [false, 'forbidden', 'missing-cap', 2])
+  assert.equal((await admin(pub('s'), { type: 'admin', rid: 3, op: 'remove', args: { id: ok.result[0].id } })).code, 'forbidden')
+  assert.equal(t.vaults.stacks.get(ok.result[0].vault).removed, undefined, 'sin admin no se borra nada')
+  assert.equal((await admin(pub('x'), { type: 'admin', rid: 4, op: 'list' })).code, 'no-record')
+  assert.ok(asked.every(([, c]) => c === 'admin'))
+  assert.equal(asked.length, 4, 'se pregunta en cada petición')
+
+  assert.equal((await admin(pub('a'), { type: 'admin', rid: 5, op: 'toString' })).code, 'unknown-op')
+  assert.equal((await admin(pub('a'), { type: 'admin', rid: 6, op: 'setOn', args: 'x' })).code, 'bad-request')
+  const err = await admin(pub('a'), { type: 'admin', rid: 7, op: 'refund', args: { id: 'nope' } })
+  assert.deepEqual([err.ok, err.code], [false, 'sub-not-found'])
+  assert.ok(logs.some((l) => /refused \(missing-cap\)/.test(l)), 'el rechazo queda en el log')
+  assert.throws(() => makeAdmin({ accounts: t.accounts }), { code: 'remote-agent-too-old' })
+})
+
+test('una base de 0.4.0 (sin admin_on) se abre y gana la columna, sin tocar las filas', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'accounts-040-'))
+  dirs.push(dir)
+  const file = path.join(dir, 'v040.db')
+  const { DatabaseSync } = require('node:sqlite')
+  const db = new DatabaseSync(file)
+  db.exec(`CREATE TABLE subs (id TEXT PRIMARY KEY, account TEXT NOT NULL, product TEXT NOT NULL, paypal_id TEXT UNIQUE,
+    status TEXT NOT NULL, paid_through INTEGER, vault TEXT UNIQUE, stack TEXT NOT NULL DEFAULT 'none',
+    device TEXT, enrolled INTEGER NOT NULL DEFAULT 0, vault_on INTEGER NOT NULL DEFAULT 0,
+    refund TEXT, note TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL)`)
+  db.prepare("INSERT INTO subs (id, account, product, status, created, updated) VALUES ('s1', 'a', 'replica', 'ACTIVE', 1, 1)").run()
+  db.close()
+  const store = new Store(file)
+  assert.equal(store.get('s1').admin_on, null)
+  store.update('s1', { admin_on: 0 })
+  assert.equal(store.get('s1').admin_on, 0)
 })

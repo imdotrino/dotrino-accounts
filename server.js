@@ -4,6 +4,7 @@
  * apaga las bóvedas alojadas (`docs/DISENO.md`).
  *
  *   dotrino-accounts serve              arranca (PORT, ACCOUNTS_DB, ACCOUNTS_DIR, ACCOUNTS_SHOP_URL)
+ *                                       y atiende la administración por `@dotrino/remote-agent` (§10)
  *   dotrino-accounts enroll <invite>    se empareja con la bóveda de Dotrino
  *   dotrino-accounts info [--json]      qué aparato es (CONVENCIONES §15.1)
  *
@@ -20,7 +21,9 @@ import { Accounts } from './src/accounts.js'
 import { paypalClient } from '@dotrino/pay'
 import { awsVaults } from './src/vaults.js'
 import { makeHandler } from './src/http.js'
-import { loadServiceIdentity, loadSecrets, enrollService, info } from './src/identity.js'
+import { makeAdmin } from './src/admin.js'
+import { startRemoteAgent } from '@dotrino/remote-agent/agent'
+import { loadServiceIdentity, loadSecrets, enrollService, info, identityDir, LABEL } from './src/identity.js'
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 const log = (...a) => console.log(new Date().toISOString(), ...a)
@@ -53,6 +56,23 @@ if (cmd === 'info') {
   const port = Number(process.env.PORT || 8095)
   http.createServer(makeHandler({ accounts, version: pkg.version, product: pkg.name, log }))
     .listen(port, '127.0.0.1', () => log(`[accounts] listening on 127.0.0.1:${port} · payments ${paypal.live ? 'live' : 'sandbox'}`))
+
+  // LA ADMINISTRACIÓN (§10): el mismo enlace del servicio atiende sesiones cifradas de los
+  // aparatos de la cuenta de Dotrino. El pong dice `kind: 'accounts'`, que es como la página
+  // /admin encuentra este servicio; quién puede administrar lo decide el acta en cada petición.
+  let ra = null
+  const admin = makeAdmin({ accounts, checkCap: (pub, cap) => ra.checkCap(pub, cap), log })
+  ra = await startRemoteAgent({
+    label: LABEL, dir: identityDir(),
+    onSession (session) {
+      session.on('message', (msg) => {
+        admin(session.device, msg)
+          .then((reply) => { if (reply) session.send(reply) })
+          .catch((e) => log(`[accounts] admin: ${e.code || ''} ${e.message}`))
+      })
+    },
+    onRevoked () { log('[accounts] this service was revoked from the Dotrino record: exiting'); process.exit(1) }
+  }).catch(die)
 
   // Cada 15 min: pilas a medio crear y el estado de cada suscripción en PayPal.
   const sweep = () => accounts.sweep().catch((e) => log(`[accounts] sweep: ${e.message}`))

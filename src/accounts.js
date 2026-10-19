@@ -27,6 +27,8 @@ export const TAX_PERCENT = 15
 export const PRICE = Object.freeze({ ...priceWithTax({ unitCents: PRICE_CENTS, taxPercent: TAX_PERCENT }), taxPercent: TAX_PERCENT, currency: 'USD', interval: 'month', product: PRODUCT })
 const DAY = 24 * 60 * 60 * 1000
 /** Cuánto se espera a que PayPal apunte el primer cobro antes de dar por hecho que no lo hubo. */
+/** El estado de una réplica que añadió el administrador a una cuenta: sin suscripción ni cobro. */
+export const COMP = 'COMP'
 export const REFUND_WAIT_MS = 3 * DAY
 /** Una réplica pagada que nadie enroló en este tiempo se borra y se devuelve lo cobrado. */
 export const ENROLL_WITHIN_MS = DAY
@@ -201,6 +203,8 @@ export class Accounts {
   }
 
   async refresh (row) {
+    // Una réplica que añadió el administrador no tiene suscripción: no hay nada que preguntar.
+    if (!row.paypal_id) fail('no-subscription', `${row.id} has no PayPal subscription (status ${row.status})`)
     const s = await this.#payments().getSubscription(row.paypal_id)
     if (s.customId !== row.id) fail('subscription-mismatch', `subscription ${row.paypal_id} is not ${row.id}`)
     if (s.planId !== this.planId) fail('subscription-mismatch', `subscription ${row.paypal_id} is for plan ${s.planId}`)
@@ -211,9 +215,13 @@ export class Accounts {
     return this.reconcile(this.store.get(row.id))
   }
 
-  /** ¿Tiene que estar encendida? Activa, o pagada hasta una fecha que no ha llegado. */
+  /**
+   * ¿Tiene que estar encendida? Si el administrador la encendió o la apagó a mano, eso; si no,
+   * activa, sin cargo (la añadió el administrador), o pagada hasta una fecha que no ha llegado.
+   */
   shouldBeOn (row) {
-    return row.status === 'ACTIVE' || (Number.isFinite(row.paid_through) && this.now() < row.paid_through)
+    if (row.admin_on === 0 || row.admin_on === 1) return row.admin_on === 1
+    return row.status === 'ACTIVE' || row.status === COMP || (Number.isFinite(row.paid_through) && this.now() < row.paid_through)
   }
 
   async reconcile (row) {
@@ -300,5 +308,94 @@ export class Accounts {
       } catch (e) { this.log(`[accounts] sweep ${row.id}: ${e.code || ''} ${e.message}`) }
     }
     return n
+  }
+
+  // ───────────────────────── Administración (§10) ─────────────────────────
+  //
+  // Lo pide un aparato de la cuenta de DOTRINO con `admin` en su acta, por la sesión cifrada
+  // de `@dotrino/remote-agent` (`src/admin.js` lo comprueba en cada petición). Aquí ya llega
+  // decidido: `by` es el ID de ese aparato, para la bitácora.
+
+  /** Lo que ve el administrador de una fila: lo del cliente y además de quién es y qué la sostiene. */
+  adminView (row) {
+    return { ...this.view(row), account: row.account, vault: row.vault, paypalId: row.paypal_id, refund: row.refund, adminOn: row.admin_on === null ? null : !!row.admin_on }
+  }
+
+  #adminRow (id) {
+    const row = this.store.get(String(id || ''))
+    if (!row) fail('sub-not-found', `no subscription ${id}`)
+    return row
+  }
+
+  /** Todas las suscripciones y réplicas del servicio, de todas las cuentas. */
+  async adminList ({ by }) {
+    const rows = this.store.all()
+    this.log(`[accounts] admin ${by}: list (${rows.length})`)
+    return rows.map((r) => this.adminView(r))
+  }
+
+  /**
+   * Encender o apagar a mano. `on: true|false` fija el interruptor y pasa por encima del pago;
+   * `on: null` lo suelta y vuelve a mandar el pago.
+   */
+  async adminSetOn ({ id, on, by }) {
+    if (on !== true && on !== false && on !== null) fail('bad-request', 'setOn: on must be true, false or null')
+    const row = this.#adminRow(id)
+    if (row.stack !== 'ready') fail('not-ready', `the replica is ${row.stack}, it cannot be turned on or off`)
+    this.store.update(row.id, { admin_on: on === null ? null : on ? 1 : 0, updated: this.now() })
+    this.log(`[accounts] admin ${by}: ${row.id} switch ${on === null ? 'released (follows payment)' : on ? 'forced on' : 'forced off'}`)
+    return this.adminView(await this.reconcile(this.store.get(row.id)))
+  }
+
+  /** Devuelve el ÚLTIMO cobro de la suscripción. No la cancela: eso es otra decisión. */
+  async adminRefund ({ id, by }) {
+    const row = this.#adminRow(id)
+    if (!row.paypal_id) fail('no-subscription', `${row.id} has no PayPal subscription: nothing to refund`)
+    const pays = await this.#payments().subscriptionPayments(row.paypal_id, { since: row.created - DAY, until: this.now() })
+    const last = pays.filter((p) => p.status === 'COMPLETED').sort((a, b) => b.time - a.time)[0]
+    if (!last) fail('nothing-to-refund', `${row.id}: no completed payment to refund`)
+    const r = await this.paypal.refundCapture(last.id, { note: 'Refund from Dotrino.' })
+    this.store.update(row.id, { refund: 'done', updated: this.now() })
+    this.log(`[accounts] admin ${by}: ${row.id} refunded ${last.amount} (${last.id} → ${r.id} ${r.status})`)
+    // DEVOLVER TAMBIÉN CANCELA (dueño, 2026-10-19): no se sigue cobrando lo que se devolvió. La
+    // réplica sigue hasta el fin de lo pagado y se apaga, como cualquier cancelación.
+    if (row.status === 'ACTIVE' || row.status === 'SUSPENDED') {
+      await this.#payments().cancelSubscription(row.paypal_id, 'refunded by the administrator')
+      await this.refresh(this.store.get(row.id))
+      this.log(`[accounts] admin ${by}: ${row.id} subscription cancelled after the refund`)
+    }
+    return { ...this.adminView(this.store.get(row.id)), refunded: { capture: last.id, amount: last.amount, refund: r.id, status: r.status } }
+  }
+
+  /**
+   * Añade una réplica a la cuenta `account` (el `pubkeyId` de la llave de su perfil, 64 hex),
+   * sin cargo. Nace con `Owner` = esa cuenta, como una comprada, y el cliente la enrola desde
+   * su página con su invitación y su código: aquí no se ata a nada más.
+   */
+  async adminAddReplica ({ account, by }) {
+    if (typeof account !== 'string' || !/^[0-9a-f]{64}$/.test(account)) fail('bad-account', 'addReplica: account must be 64 lowercase hex (the pubkeyId of the profile key)')
+    const id = randomUUID()
+    const ts = this.now()
+    this.store.insert({ id, account, product: PRODUCT, status: COMP, created: ts, updated: ts })
+    this.log(`[accounts] admin ${by}: ${id} replica added to account ${account.slice(0, 16)}… (no charge)`)
+    return this.adminView(await this.#provision(this.store.get(id)))
+  }
+
+  /**
+   * Borra la réplica (la pila). Si tenía una suscripción viva se cancela antes, para que no se
+   * siga cobrando algo que ya no existe; devolver es aparte (`adminRefund`).
+   */
+  async adminRemove ({ id, by }) {
+    const row = this.#adminRow(id)
+    if (row.stack === 'deleted') fail('already-deleted', `${row.id}: the replica is already deleted`)
+    if (row.stack === 'none' || !row.vault) fail('no-stack', `${row.id}: no replica was ever created`)
+    if (row.paypal_id && (row.status === 'ACTIVE' || row.status === 'SUSPENDED')) {
+      await this.#payments().cancelSubscription(row.paypal_id, 'removed by the administrator')
+      await this.refresh(row)
+    }
+    await this.vaults.remove(row.vault)
+    this.store.update(row.id, { stack: 'deleted', vault_on: 0, note: 'removed by admin', updated: this.now() })
+    this.log(`[accounts] admin ${by}: ${row.id} replica ${row.vault} removed`)
+    return this.adminView(this.store.get(row.id))
   }
 }

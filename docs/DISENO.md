@@ -248,15 +248,50 @@ La segunda bóveda (§8.bis) pasa por el mismo camino, con `join` en vez de `rep
 | `websocket-proxy` | HECHO (1.8.0, proxy-client 0.39.0: `registerWake({ self })`). Antes: el timbre se guardaba para la CUENTA (`push-subscribe` `kind:'wake'` → `profileId`), y una réplica no entra como la cuenta: se identifica con SU llave, y el cliente le escribe a esa llave cuando la bóveda no contesta (`fetchSecrets`, `targets`). Hace falta un timbre para la llave propia, firmado por ella: un mensaje encolado para la réplica la despierta |
 | `dotrino-accounts` | HECHO (0.3.0): fuera el modo de perfil nuevo; `product: 'replica'` (y `'vault'` cuando §5 exista); todo firmado por la cuenta; `/enroll`; borrar a las 24 h; plan de PayPal de $3,45 (`PAYPAL_REPLICA_PLAN_ID`) |
 
-## 10. Abierto
+## 10. Administración desde el perfil de Dotrino
 
-- **Administración desde el perfil de Dotrino** (pedido del dueño, 2026-10-19). La cuenta de AWS
-  es de Dotrino, así que el perfil de Dotrino tiene que poder: ver todas las suscripciones y
-  bóvedas, **encenderlas y apagarlas**, **devolver un pago**, **añadir una réplica a un perfil
-  concreto** y **borrar una bóveda**. Lo que NO: atar una bóveda a un perfil que ya existe (una
-  bóveda alojada nace con su propia cuenta). Las peticiones van firmadas como las del cliente, y
-  las acepta solo la cuenta de Dotrino. **La página lista los aparatos `accounts` del acta de
-  Dotrino** —puede haber varios— y al abrir uno se despliega lo que administra ese.
+> Pedido del dueño, 2026-10-19. HECHO en 0.5.0 (con `@dotrino/remote-agent` 0.23.0).
+
+La cuenta de AWS es de Dotrino, así que el perfil de Dotrino administra lo que este servicio
+vende. La página es **`vault.dotrino.com/admin`**, una vista más de la consola de la bóveda.
+
+- **Por dónde.** El servicio arranca, con el mismo enlace con que se enroló (`identityDir()`),
+  un agente de `@dotrino/remote-agent` con `label: 'accounts'`. La página pregunta a los
+  miembros del acta de la cuenta abierta (`listAgentsByLabel` + `probeAgents`) y se queda con
+  los que contestan `kind: 'accounts'`. **El enlace del menú solo sale si el acta tiene algún
+  servicio `accounts`**: para cualquier otra cuenta no aparece nada. Puede haber varios
+  (sandbox y live); se listan todos y al abrir uno se ve lo que administra ese.
+- **Quién puede.** Abrir sesión ya exige ser del acta y poder firmar. Administrar exige además
+  **`admin`** en el acta de Dotrino, y el servicio lo pregunta **en cada petición** al acta de
+  confianza del agente (`ra.checkCap(session.device, 'admin')`), nunca a lo que diga la página.
+  Si no pasa, el agente trae el acta en el momento (un permiso recién dado no espera al tic de
+  5 min). Sin `admin`: `forbidden`; sin acta de confianza: `no-record`.
+- **El protocolo**, dentro de la sesión cifrada (`src/admin.js`):
+
+  ```
+  → { type: 'admin', rid, op, args }
+  ← { type: 'admin.result', rid, ok: true, result }
+  ← { type: 'admin.result', rid, ok: false, code, error }
+  ```
+
+  | `op` | `args` | Qué hace |
+  |---|---|---|
+  | `list` | — | todas las suscripciones y réplicas, de todas las cuentas |
+  | `setOn` | `{ id, on }` | `on: true/false` enciende o apaga a mano **por encima del pago** (columna `admin_on`); `on: null` lo suelta y vuelve a mandar el pago |
+  | `refund` | `{ id }` | devuelve el **último** cobro completado **y cancela** la suscripción (dueño, 2026-10-19): sigue hasta el fin de lo pagado y se apaga |
+  | `addReplica` | `{ account }` | crea una réplica **sin cargo** (`status: 'COMP'`, sin PayPal) con `Owner` = `account` (`pubkeyId` de la llave del perfil, 64 hex) |
+  | `remove` | `{ id }` | borra la pila. Si la suscripción sigue viva, la cancela antes (devolver es aparte) |
+
+  Cada operación queda en el log en inglés, con el ID del aparato que la pidió.
+- **Añadir una réplica a un perfil** no la ata a nada: nace con `Owner` = esa cuenta, sale en el
+  `/mine` de esa cuenta, y el cliente la enrola desde su `/hosted` con su invitación y su código,
+  como una comprada. **No hay otra forma** de atar una bóveda a un perfil que ya existe. Como
+  cualquier réplica, si nadie la enrola en 24 h se borra.
+- **Lo que no es una suscripción no se le pregunta a PayPal**: `confirm`, `cancel` y `refund`
+  de una réplica sin cargo contestan `no-subscription` (409).
+
+## 11. Abierto
+
 - **Lo que todavía puede la llave del servicio, con el límite puesto** (2026-10-19). Los roles de
   las pilas llevan el límite `dotrino-vault-boundary` (`aws/vault-role-boundary.json`) y el rol de
   CloudFormation solo crea roles que lo lleven, así que ya no se puede fabricar un rol con más

@@ -7,12 +7,15 @@
  *           que la réplica es en su acta, y `enrolled`, si el dueño ya aprobó su código.
  *           `refund` es la devolución cuando la réplica no llegó a servir: 'pending' mientras
  *           PayPal no haya apuntado el cobro, 'done' devuelto, 'none' no se llegó a cobrar.
+ *           Una réplica que añade el administrador de Dotrino a una cuenta (§10) no tiene
+ *           suscripción: `paypal_id` NULL y `status` 'COMP'. `admin_on` es el interruptor del
+ *           administrador: NULL = manda el pago; 1 o 0 = encendida o apagada a mano.
  *   events  cada webhook de PayPal tal cual, para poder auditar qué pasó y cuándo
  *   nonces  las peticiones firmadas ya usadas (anti-repetición), hasta que caducan
  */
 import { DatabaseSync } from 'node:sqlite'
 
-const COLS = ['id', 'account', 'product', 'paypal_id', 'status', 'paid_through', 'vault', 'stack', 'device', 'enrolled', 'vault_on', 'refund', 'note', 'created', 'updated']
+const COLS = ['id', 'account', 'product', 'paypal_id', 'status', 'paid_through', 'vault', 'stack', 'device', 'enrolled', 'vault_on', 'refund', 'admin_on', 'note', 'created', 'updated']
 
 export class Store {
   constructor (file = ':memory:') {
@@ -22,13 +25,17 @@ export class Store {
     if (this.db.prepare('PRAGMA table_info(subs)').all().some((c) => c.name === 'claim')) {
       throw Object.assign(new Error(`store: ${file} is from before the hosted replica (it has a claim column): move it aside`), { code: 'old-store' })
     }
+    // Una de 0.4.0 no tiene `admin_on`: se le añade la columna (vacía = manda el pago). Es una
+    // línea y no toca ninguna fila, así que las réplicas que ya hay siguen igual.
+    const cols = this.db.prepare('PRAGMA table_info(subs)').all()
+    if (cols.length && !cols.some((c) => c.name === 'admin_on')) this.db.exec('ALTER TABLE subs ADD COLUMN admin_on INTEGER')
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS subs (
         id TEXT PRIMARY KEY, account TEXT NOT NULL, product TEXT NOT NULL, paypal_id TEXT UNIQUE,
         status TEXT NOT NULL, paid_through INTEGER, vault TEXT UNIQUE, stack TEXT NOT NULL DEFAULT 'none',
         device TEXT, enrolled INTEGER NOT NULL DEFAULT 0, vault_on INTEGER NOT NULL DEFAULT 0,
-        refund TEXT, note TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL);
+        refund TEXT, admin_on INTEGER, note TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS subs_account ON subs (account);
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, sub TEXT, kind TEXT NOT NULL, json TEXT NOT NULL, ts INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, exp INTEGER NOT NULL);
@@ -48,6 +55,8 @@ export class Store {
 
   get (id) { return this.db.prepare('SELECT * FROM subs WHERE id = ?').get(id) || null }
   byPaypal (paypalId) { return this.db.prepare('SELECT * FROM subs WHERE paypal_id = ?').get(paypalId) || null }
+  /** Todas, para el administrador: las más nuevas primero. */
+  all () { return this.db.prepare('SELECT * FROM subs ORDER BY created DESC').all() }
   ofAccount (account) { return this.db.prepare('SELECT * FROM subs WHERE account = ? ORDER BY created').all(account) }
   /** Las que tienen algo que vigilar: una suscripción en PayPal o una pila que no se borró. */
   live () { return this.db.prepare("SELECT * FROM subs WHERE stack != 'deleted' AND (paypal_id IS NOT NULL OR stack != 'none')").all() }

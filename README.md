@@ -11,6 +11,10 @@ bóvedas alojadas** (una bóveda de Dotrino en AWS Lambda, $5/mes + IVA) y, más
   aparato de esa cuenta.
 - La compra se hace en la página de la bóveda, `vault.dotrino.com/hosted`; este servicio es solo la API.
 - Nunca se vende dentro de una app nativa (iOS ni Android).
+- Se administra desde `vault.dotrino.com/admin`, por una sesión cifrada de `@dotrino/remote-agent`
+  (`kind: 'accounts'`), y solo desde un aparato con `admin` en el acta de Dotrino: ver todas las
+  suscripciones, encender y apagar, devolver un cobro, añadir una réplica sin cargo a una cuenta
+  y borrar una réplica (`docs/DISENO.md` §10).
 
 Diseño: [`docs/DISENO.md`](docs/DISENO.md). Permisos de AWS: [`aws/`](aws/).
 
