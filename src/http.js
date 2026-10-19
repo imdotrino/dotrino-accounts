@@ -52,6 +52,8 @@ export function makeHandler ({ accounts, version, product = '@dotrino/accounts-s
       if (req.method === 'GET') {
         if (path === '/version') return json(res, 200, { product, version, protocol: PROTOCOL })
         if (path === '/price') return json(res, 200, PRICE)
+        // La compra se hace en la página de la bóveda: aquí solo está la API.
+        if (path === '/') { res.writeHead(302, { location: 'https://vault.dotrino.com/hosted' }); return res.end() }
         return json(res, 404, { code: 'not-found' })
       }
       if (req.method === 'POST') {

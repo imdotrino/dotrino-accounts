@@ -38,8 +38,12 @@ const CODE_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const activationCode = () => Array.from(randomBytes(24), (b) => CODE_ABC[b % 32]).join('').replace(/(.{4})(?!$)/g, '$1-')
 
 export class Accounts {
-  constructor ({ store, vaults, paypal = null, planId = null, webhookId = null, publicUrl = 'https://accounts.dotrino.com', now = Date.now, log = () => {} }) {
-    Object.assign(this, { store, vaults, paypal, planId, webhookId, publicUrl, now, log })
+  /**
+   * `shopUrl`: la página donde se compra, que es la de la BÓVEDA (`vault.dotrino.com/hosted`):
+   * lo que se compra es una bóveda. Allí vuelve PayPal (`?sub=<id>`) y desde allí se activa.
+   */
+  constructor ({ store, vaults, paypal = null, planId = null, webhookId = null, shopUrl = 'https://vault.dotrino.com/hosted', now = Date.now, log = () => {} }) {
+    Object.assign(this, { store, vaults, paypal, planId, webhookId, shopUrl, now, log })
   }
 
   #payments () {
@@ -70,7 +74,7 @@ export class Accounts {
     const claim = randomBytes(32).toString('base64url')
     const { id: paypalId, approveUrl } = await paypal.createSubscription({
       planId: this.planId, customId: id,
-      returnUrl: `${this.publicUrl}/subscribed?sub=${id}`, cancelUrl: `${this.publicUrl}/`
+      returnUrl: `${this.shopUrl}?sub=${id}`, cancelUrl: this.shopUrl
     })
     const ts = this.now()
     this.store.insert({ id, claim: hash(claim).toString('hex'), paypal_id: paypalId, status: 'APPROVAL_PENDING', created: ts, updated: ts })

@@ -9,6 +9,7 @@ bóvedas alojadas** (una bóveda de Dotrino en AWS Lambda, $5/mes + IVA) y, más
   `dotrino-vault` y una llave de KMS compartida. Apagar = concurrencia 0; no se borra nada.
 - Quien manda en una suscripción es la cuenta de su bóveda: ver y cancelar van firmados por un
   aparato de esa cuenta.
+- La compra se hace en la página de la bóveda, `vault.dotrino.com/hosted`; este servicio es solo la API.
 - Nunca se vende dentro de una app nativa (iOS ni Android).
 
 Diseño: [`docs/DISENO.md`](docs/DISENO.md). Permisos de AWS: [`aws/`](aws/).
@@ -25,7 +26,7 @@ npm test
 ```bash
 dotrino-accounts enroll <invitación de: dotrino-vault pair --service accounts>
 dotrino-accounts info
-dotrino-accounts serve        # PORT (8095), ACCOUNTS_DB, ACCOUNTS_DIR, ACCOUNTS_PUBLIC_URL
+dotrino-accounts serve        # PORT (8095), ACCOUNTS_DB, ACCOUNTS_DIR, ACCOUNTS_SHOP_URL
 ```
 
 La configuración sale entera del cajón `accounts` de la bóveda de Dotrino (lista en `server.js`).

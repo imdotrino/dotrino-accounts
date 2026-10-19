@@ -3,7 +3,7 @@
  * dotrino-accounts — el servicio de cuentas (`accounts.dotrino.com`): vende, activa, renueva y
  * apaga las bóvedas alojadas (`docs/DISENO.md`).
  *
- *   dotrino-accounts serve              arranca (PORT, ACCOUNTS_DB, ACCOUNTS_DIR, ACCOUNTS_PUBLIC_URL)
+ *   dotrino-accounts serve              arranca (PORT, ACCOUNTS_DB, ACCOUNTS_DIR, ACCOUNTS_SHOP_URL)
  *   dotrino-accounts enroll <invite>    se empareja con la bóveda de Dotrino
  *   dotrino-accounts info [--json]      qué aparato es (CONVENCIONES §15.1)
  *
@@ -48,7 +48,7 @@ if (cmd === 'info') {
   const accounts = new Accounts({
     store: new Store(process.env.ACCOUNTS_DB || 'accounts.db'), vaults, paypal,
     planId: s.PAYPAL_PLAN_ID, webhookId: s.PAYPAL_WEBHOOK_ID,
-    publicUrl: process.env.ACCOUNTS_PUBLIC_URL || 'https://accounts.dotrino.com', log
+    shopUrl: process.env.ACCOUNTS_SHOP_URL || 'https://vault.dotrino.com/hosted', log
   })
   const port = Number(process.env.PORT || 8095)
   http.createServer(makeHandler({ accounts, version: pkg.version, product: pkg.name, log }))
