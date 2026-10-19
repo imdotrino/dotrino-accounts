@@ -29,7 +29,7 @@ const STATUS = {
   'sub-not-found': 404, 'stack-not-found': 404, 'not-found': 404,
   'bad-request': 400, 'bad-json': 400, 'bad-version': 400, 'request-mismatch': 400,
   'bad-request-signature': 401, 'bad-webhook-signature': 401, 'replayed': 409, 'subscription-mismatch': 409,
-  'not-ready': 409, 'already-enrolled': 409, 'no-invitation': 400, 'enroll-failed': 502, 'no-code': 504, 'function-error': 502,
+  'not-ready': 409, 'already-enrolled': 409, 'lease-busy': 409, 'no-invitation': 400, 'enroll-failed': 502, 'no-code': 504, 'function-error': 502,
   'payments-unavailable': 503, 'provider-error': 502, 'provider-not-found': 502, 'payment-declined': 402, 'bad-id': 400, 'body-too-large': 413
 }
 
