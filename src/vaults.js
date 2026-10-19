@@ -90,12 +90,12 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
       const r = await lambda.send(new InvokeCommand({ FunctionName: functionName(vault), InvocationType: 'RequestResponse', Payload: Buffer.from(JSON.stringify(payload)) }))
       if (r.FunctionError) throw Object.assign(new Error(`vaults: ${vault} failed on ${payload.kind}: ${r.FunctionError}`), { code: 'function-error' })
       return JSON.parse(Buffer.from(r.Payload || '').toString('utf8') || 'null')
-    }
+    },
 
     /** Borra la pila (las réplicas que nadie enroló). El bucket se queda: lo retiene la plantilla. */
     async remove (vault) {
       await cfn.send(new DeleteStackCommand({ StackName: stackName(vault), RoleARN: cfnRoleArn }))
-    }
+    },
 
     async setOn (vault, on) {
       if (on) await lambda.send(new DeleteFunctionConcurrencyCommand({ FunctionName: functionName(vault) }))

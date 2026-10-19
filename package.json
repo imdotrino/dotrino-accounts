@@ -1,6 +1,6 @@
 {
   "name": "@dotrino/accounts-server",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "El servicio de cuentas de Dotrino (accounts.dotrino.com): vende, activa, renueva y apaga las bóvedas alojadas.",
   "license": "MIT",
   "type": "module",
