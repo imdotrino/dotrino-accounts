@@ -223,7 +223,7 @@ La segunda bóveda (§8.bis) pasa por el mismo camino, con `join` en vez de `rep
 |---|---|
 | `dotrino-vault/lambda` | `Mode: replica` en la plantilla (sin perfil ni maestra) con `Invitation`; el primer arranque canjea, da `DeviceId`/`PairingCode` y espera el «enrolado»; las sesiones corren `replica run` |
 | `dotrino-vault` (consola) | botón «Añadir réplica alojada» (saca la invitación y abre la compra) y el pendiente con su código |
-| `websocket-proxy` | nada, en principio: el timbre (`push-subscribe` `kind:'wake'`) ya lo acepta de cualquier miembro del acta (`verifyActaMembership`). Falta comprobarlo con una réplica |
+| `websocket-proxy` | el timbre hoy se guarda para la CUENTA (`push-subscribe` `kind:'wake'` → `profileId`), y una réplica no entra como la cuenta: se identifica con SU llave, y el cliente le escribe a esa llave cuando la bóveda no contesta (`fetchSecrets`, `targets`). Hace falta un timbre para la llave propia, firmado por ella: un mensaje encolado para la réplica la despierta |
 | `dotrino-accounts` | quitar el modo de perfil nuevo; `product: 'replica'` (y `'vault'` cuando §5 exista); la compra va firmada por la cuenta, con la invitación; reenrolar (`UpdateStack`) y borrar a las 24 h; plan de PayPal de $3,45 |
 
 ## 10. Abierto
