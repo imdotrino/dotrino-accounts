@@ -94,23 +94,55 @@ vault.dotrino.com/hosted ──1 POST /subscribe──▶ accounts ──▶ Pay
 
 ## 5. La maestra, sellada con la contraseña del cliente
 
-Hoy la Lambda guarda la maestra bajo KMS sin contraseña (`lambda/README.md`, «Lo que falta» 3):
-quien controle la cuenta de AWS de Dotrino puede abrirla. Con eso no se puede vender.
+> Rehecho el 2026-10-19 sobre §8.bis: la bóveda de $5 ya no nace con un perfil nuevo, **entra en
+> la cuenta del cliente** como segunda bóveda (`join`, con `sella`). Su maestra es una llave
+> NUEVA, nacida en la Lambda, y es la que tiene que ir sellada. El dueño eligió **una contraseña
+> nueva, puesta al comprar** (no la de la otra bóveda).
 
-Lo que cambia:
+**En reposo** la maestra va sellada con la llave del perfil `K`, y `K` solo existe envuelta por la
+llave que sale de la contraseña: `lock.json = { salt, params, wrapped: cifrar(K, scrypt(contraseña,
+salt)) }`, en el directorio del perfil (que KMS cifra encima, y que se refleja en S3). Es el mismo
+sobre que la «contraseña de administración» de la bóveda de escritorio (`dotrino-vault/docs/
+abrir-a-distancia.md`), y por eso la consola ya sabe abrirla: **no hay protocolo nuevo para
+abrir**. KMS sigue envolviendo el disco, pero ya no basta.
 
-- **En reposo**, la maestra se guarda **sellada con la contraseña del perfil**, como en la bóveda
-  de escritorio. KMS sigue envolviendo el disco, pero ya no basta para abrir la maestra.
-- **Cerrada sigue sirviendo** (commkey y sealkey bajo KMS): se identifica, entrega sobres, hace
-  login. Es lo mismo que la bóveda del VPS hoy.
-- **Abrir para firmar el acta** (admitir o quitar un aparato, cambiar permisos) lo hace el
-  cliente desde su consola: la contraseña viaja **sellada de punta a punta** a la sesión de la
-  Lambda, se abre en su memoria, firma, y **se cierra al acabar la sesión** (60 s sin
-  mensajes). Lo que se dice sin esconderlo: **durante esa sesión** la maestra está en la memoria
-  de una máquina de AWS de Dotrino. En reposo, no.
-- Mejor todavía, y queda como siguiente paso: **firmar el acta en el navegador del cliente**
-  (baja el sobre de la maestra, lo abre con su contraseña allí, firma y sube el acta). Así la
-  maestra no entra nunca en la Lambda. Requiere que la consola web sepa sellar actas.
+**Cerrada sirve**: commkey y sealkey van bajo KMS, como en el VPS. Identifica, entrega sobres y
+replica. Lo que necesita la maestra (sellar el acta) contesta `vault-locked`.
+
+**Abrir** = el «abrir a distancia» de siempre, desde la consola de tu cuenta con un aparato con
+`admin`: la consola pide una llave efímera a la sesión de la Lambda (`unlock.begin`), deriva la
+contraseña AQUÍ (scrypt) y manda solo la derivada sellada a esa efímera (`unlock`). La Lambda
+desenvuelve `K`, abre la maestra y la tiene en memoria **mientras dure la sesión** (60 s sin
+mensajes). Se dice sin esconderlo: durante esa sesión la maestra está en la memoria de una máquina
+de AWS de Dotrino. En reposo, no.
+
+> ⚠️ **PENDIENTE (2026-10-19): todavía no llega.** La bóveda está hecha para abrirse así (y lo hace,
+> probado en `dotrino-vault/test/lambda-join.e2e.test.mjs`), pero el proxio solo entrega lo
+> dirigido a la maestra de la bóveda que **es** el perfil —la primera—: a la de una segunda bóveda
+> no la enruta nadie, así que la consola no le llega. Falta atar esa maestra a su llave de
+> comunicación (la prueba está como `todo`). Mientras tanto la alojada sirve cerrada y entra
+> abierta en el alta, que es cuando admite su llave de comunicación.
+
+**Nacer** es lo único nuevo, porque la maestra no puede tocar el disco en claro ni un instante:
+
+1. `/hosted`: el cliente pega la invitación de su bóveda (`pair --scope sella`) y elige la
+   contraseña (mínimo 12, como en escritorio).
+2. `accounts` → Lambda `{ kind:'enroll', invitation }`: la Lambda lanza el alta, que crea una
+   efímera **en memoria** y devuelve `{ ek, salt, params }`.
+3. El navegador deriva y sella `{ nonce: req, key }` a `ek`. `accounts` lo pasa sin poder leerlo
+   (`{ kind:'enroll-door', req, enc }`).
+4. El alta abre el sobre, crea `K`, escribe `lock.json`, y **solo entonces** crea la identidad: la
+   maestra nace sellada. Tira la efímera.
+5. `join` a la cuenta del cliente, comprobando que la invitación es de **la cuenta que pagó**
+   (`account`, como la réplica: con otra cuenta no hay código). La invitación la saca **cualquier
+   bóveda de la cuenta que selle**, como para cualquier aparato (dueño, 2026-10-19). Devuelve el
+   código y el cliente lo teclea en esa bóveda, que la admite con `sella`.
+
+Lo que **no** se puede: recuperar la contraseña. Si se olvida, esa bóveda no vuelve a sellar; la
+otra bóveda de la cuenta sigue sellando y puede quitarla. Cambiarla pide abrirla (pendiente).
+
+Siguiente paso, y queda escrito: **sellar el acta en el navegador del cliente** (baja el sobre, lo
+abre allí y sube el acta), para que la maestra no entre nunca en la Lambda.
 
 ## 6. Dónde corre `dotrino-accounts`
 
@@ -170,7 +202,8 @@ Cambia lo que dicen §3 y §5 sobre la bóveda alojada:
 - **Después la segunda bóveda** ($5, el multivault de `dotrino-vault/docs/replicas.md` §1.bis:
   entra con `join`, tiene maestra y `+sella`). **No sale a la venta hasta que su maestra vaya
   sellada con la contraseña del cliente** (§5): sin eso es un sellador abierto en la cuenta de
-  Dotrino, que es justo lo que se desmontó en EC2 el 2026-09-02.
+  Dotrino, que es justo lo que se desmontó en EC2 el 2026-09-02. Hecho el 2026-10-19 (vaultd
+  0.168.0, `Mode: join`); falta abrirla a distancia (§5).
 - La primera compra de prueba (2026-10-19) usó el modo viejo; esa bóveda (`h17005f242842`) se
   queda hasta su fecha pagada y no se crean más así.
 

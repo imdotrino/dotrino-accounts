@@ -21,7 +21,7 @@ const OPS = {
   list: (a, args, by) => a.adminList({ by }),
   setOn: (a, args, by) => a.adminSetOn({ id: args.id, on: args.on, by }),
   refund: (a, args, by) => a.adminRefund({ id: args.id, by }),
-  addReplica: (a, args, by) => a.adminAddReplica({ account: args.account, by }),
+  addReplica: (a, args, by) => a.adminAddReplica({ account: args.account, product: args.product, by }),
   remove: (a, args, by) => a.adminRemove({ id: args.id, by })
 }
 export const ADMIN_OPS = Object.freeze(Object.keys(OPS))

@@ -23,6 +23,7 @@ import { makeHandler } from '../src/http.js'
 const require = createRequire(import.meta.url)
 const DAY = 24 * 60 * 60 * 1000
 const PLAN = 'P-TEST'
+const PLAN_VAULT = 'P-VAULT'
 let clock = Date.UTC(2026, 9, 18)
 const now = () => clock
 
@@ -68,9 +69,10 @@ function fakeVaults () {
   return {
     stacks,
     invocations: [],
-    async create ({ vault, owner }) { stacks.set(vault, { owner, state: 'creating', on: true, enrolled: false, device: null }) },
-    async describe (vault) {
+    async create ({ vault, owner, mode }) { stacks.set(vault, { owner, mode, state: 'creating', on: true, enrolled: false, device: null }) },
+    async describe (vault, mode) {
       const s = stacks.get(vault)
+      assert.equal(mode, s.mode, 'se mira la pila con el modo con el que se creó')
       return s.state === 'ready' ? { state: 'ready' } : { state: s.state, reason: s.reason }
     },
     async invoke (vault, payload) {
@@ -78,8 +80,16 @@ function fakeVaults () {
       const s = stacks.get(vault)
       if (payload.kind === 'enroll') {
         if (payload.invitation === 'caducada') return { ok: false, error: 'enroll-failed', message: 'invalid or expired pairing token' }
+        // La segunda bóveda pide antes la contraseña.
+        if (s.mode === 'join') return { ok: true, req: 'REQ-1', door: { ek: { kty: 'EC' }, salt: 'c2FsdA==', N: 16384, r: 8, p: 1, len: 32 } }
         s.device = 'AB12-CD34'
         return { ok: true, deviceId: s.device, code: '123456' }
+      }
+      if (payload.kind === 'enroll-door') {
+        if (s.mode !== 'join' || payload.req !== 'REQ-1' || !payload.enc) return { ok: false, error: 'bad-door' }
+        s.door = payload.enc
+        s.device = 'EF56-7890'
+        return { ok: true, deviceId: s.device, code: '654321' }
       }
       if (payload.kind === 'status') return { ok: true, enrolled: s.enrolled, deviceId: s.enrolled ? s.device : null, seq: s.enrolled ? 3 : 0 }
       return { ok: false, error: 'unknown' }
@@ -98,11 +108,11 @@ test.after(() => { for (const id of ids) id.destroy?.(); for (const d of dirs) f
 function setup () {
   const paypal = fakePaypal()
   const vaults = fakeVaults()
-  const accounts = new Accounts({ store: new Store(), vaults, paypal, planId: PLAN, webhookId: 'WH-1', now })
+  const accounts = new Accounts({ store: new Store(), vaults, paypal, planIds: { replica: PLAN, vault: PLAN_VAULT }, webhookId: 'WH-1', now })
   return { paypal, vaults, accounts }
 }
 
-const subscribe = async (t, who = ana) => t.accounts.subscribe({ req: await req(who, { op: 'subscribe', product: PRODUCT }) })
+const subscribe = async (t, who = ana, product = PRODUCT) => t.accounts.subscribe({ req: await req(who, { op: 'subscribe', product }) })
 const confirm = async (t, id, who = ana) => t.accounts.confirm({ id, req: await req(who, { op: 'confirm', id }) })
 const enroll = async (t, id, invitation = 'cINVITE', who = ana) => t.accounts.enroll({ id, invitation, req: await req(who, { op: 'enroll', id }) })
 const mine = async (t, who = ana) => t.accounts.mine({ req: await req(who, { op: 'mine' }) })
@@ -137,7 +147,7 @@ test('comprar: la compra la firma la cuenta; sin aprobar en PayPal no hay répli
   assert.equal(t.vaults.stacks.size, 1, 'confirmar dos veces no crea otra réplica')
   assert.equal([...t.vaults.stacks.values()][0].owner, ana.account, 'la réplica nace sabiendo qué cuenta la pagó')
   await assert.rejects(confirm(t, id, beto), { code: 'sub-not-found' })
-  await assert.rejects(t.accounts.subscribe({ req: await req(ana, { op: 'subscribe', product: 'vault' }) }), { code: 'request-mismatch' })
+  await assert.rejects(t.accounts.subscribe({ req: await req(ana, { op: 'subscribe', product: 'yate' }) }), { code: 'bad-product' })
 })
 
 test('enrolar: solo con la invitación, solo la cuenta dueña, y hasta que el dueño aprueba el código', async () => {
@@ -478,4 +488,47 @@ test('una base de 0.4.0 (sin admin_on) se abre y gana la columna, sin tocar las 
   assert.equal(store.get('s1').admin_on, null)
   store.update('s1', { admin_on: 0 })
   assert.equal(store.get('s1').admin_on, 0)
+})
+
+test('la segunda bóveda: su plan, su pila `join`, y la contraseña sellada antes del código', async () => {
+  const t = setup()
+  const { id, approveUrl, price } = await subscribe(t, ana, 'vault')
+  assert.ok(approveUrl)
+  assert.equal(price.total, '5.75', '$5 + IVA')
+  const pid = t.accounts.store.get(id).paypal_id
+  assert.equal(t.paypal.subs.get(pid).planId, PLAN_VAULT, 'con el plan de la bóveda, no el de la réplica')
+  t.paypal.approve(pid)
+  await confirm(t, id)
+  const { vault } = t.accounts.store.get(id)
+  assert.equal(t.vaults.stacks.get(vault).mode, 'join')
+  t.vaults.finish(vault)
+
+  // 1. La invitación: todavía no hay código, hay con qué derivar la contraseña.
+  const r = await enroll(t, id)
+  assert.equal(r.code, undefined)
+  assert.equal(r.door.req, 'REQ-1')
+  assert.ok(r.door.ek && r.door.salt && r.door.N)
+  // 2. La contraseña sellada (aquí no se abre): ahora sí, el código.
+  const enc = { sealed: 'opaco' }
+  const doorReq = await req(ana, { op: 'enroll-door', id })
+  const r2 = await t.accounts.enrollDoor({ id, door: { req: r.door.req, enc }, req: doorReq })
+  assert.equal(r2.code, '654321')
+  assert.deepEqual(t.vaults.stacks.get(vault).door, enc, 'el sobre llega tal cual a la bóveda')
+  // Otra cuenta no puede ni intentarlo.
+  await assert.rejects(t.accounts.enrollDoor({ id, door: { req: 'REQ-1', enc }, req: await req(beto, { op: 'enroll-door', id }) }), (e) => e.code === 'sub-not-found')
+
+  t.vaults.approve(vault)
+  clock += 20_000
+  const [v] = await mine(t)
+  assert.equal(v.product, 'vault')
+  assert.equal(v.enrolled, true)
+})
+
+test('la contraseña solo la toma la segunda bóveda, y un producto que no existe no se compra', async () => {
+  const t = setup()
+  const { id } = await bought(t)
+  await assert.rejects(t.accounts.enrollDoor({ id, door: { req: 'x', enc: {} }, req: await req(ana, { op: 'enroll-door', id }) }), (e) => e.code === 'bad-request')
+  await assert.rejects(subscribe(t, ana, 'yate'), (e) => e.code === 'bad-product')
+  const sin = new Accounts({ store: new Store(), vaults: fakeVaults(), paypal: fakePaypal(), planIds: { replica: PLAN }, webhookId: 'WH-1', now })
+  await assert.rejects(sin.subscribe({ req: await req(ana, { op: 'subscribe', product: 'vault' }) }), (e) => e.code === 'payments-unavailable', 'sin plan, la bóveda no se vende')
 })

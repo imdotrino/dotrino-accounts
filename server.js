@@ -50,12 +50,14 @@ if (cmd === 'info') {
   })
   const accounts = new Accounts({
     store: new Store(process.env.ACCOUNTS_DB || 'accounts.db'), vaults, paypal,
-    planId: s.PAYPAL_REPLICA_PLAN_ID, webhookId: s.PAYPAL_WEBHOOK_ID,
+    // La segunda bóveda se vende cuando su plan está en el cajón (`scripts/setup-plan.mjs vault`).
+    planIds: { replica: s.PAYPAL_REPLICA_PLAN_ID, ...(s.PAYPAL_VAULT_PLAN_ID ? { vault: s.PAYPAL_VAULT_PLAN_ID } : {}) },
+    webhookId: s.PAYPAL_WEBHOOK_ID,
     shopUrl: process.env.ACCOUNTS_SHOP_URL || 'https://vault.dotrino.com/hosted', log
   })
   const port = Number(process.env.PORT || 8095)
   http.createServer(makeHandler({ accounts, version: pkg.version, product: pkg.name, log }))
-    .listen(port, '127.0.0.1', () => log(`[accounts] listening on 127.0.0.1:${port} · payments ${paypal.live ? 'live' : 'sandbox'}`))
+    .listen(port, '127.0.0.1', () => log(`[accounts] listening on 127.0.0.1:${port} · payments ${paypal.live ? 'live' : 'sandbox'} · on sale: ${Object.keys(accounts.planIds).join(', ')}`))
 
   // LA ADMINISTRACIÓN (§10): el mismo enlace del servicio atiende sesiones cifradas de los
   // aparatos de la cuenta de Dotrino. El pong dice `kind: 'accounts'`, que es como la página

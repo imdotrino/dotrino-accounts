@@ -1,7 +1,7 @@
 /**
- * Las cuentas: comprar una RÉPLICA alojada para la cuenta que ya tienes, enrolarla con tu
- * invitación, renovarla (lo hace PayPal cada mes) y apagarla o volverla a encender según lo
- * pagado (`docs/DISENO.md` §8.bis y §9).
+ * Las cuentas: comprar una RÉPLICA o una SEGUNDA BÓVEDA alojadas para la cuenta que ya tienes,
+ * enrolarlas con tu invitación, renovarlas (lo hace PayPal cada mes) y apagarlas o volverlas a
+ * encender según lo pagado (`docs/DISENO.md` §5, §8.bis y §9).
  *
  * Tres reglas que ordenan todo esto:
  *
@@ -20,11 +20,22 @@ import { pubkeyId } from '@dotrino/identity/keyid'
 
 export const AUDIENCE = 'https://accounts.dotrino.com'
 export const FORMAT_V = 1
-export const PRODUCT = 'replica'
-/** $3/mes + IVA (15 % en Ecuador). El plan de PayPal se da de alta con esto (`scripts/setup-plan.mjs`). */
-export const PRICE_CENTS = 300
 export const TAX_PERCENT = 15
-export const PRICE = Object.freeze({ ...priceWithTax({ unitCents: PRICE_CENTS, taxPercent: TAX_PERCENT }), taxPercent: TAX_PERCENT, currency: 'USD', interval: 'month', product: PRODUCT })
+/**
+ * LO QUE SE VENDE. Cada producto es un plan de PayPal (`scripts/setup-plan.mjs`) y un modo de la
+ * pila de `dotrino-vault/lambda`:
+ *
+ *   · `replica` ($3 + IVA): reparte lo que tu bóveda firmó; no tiene maestra (§9).
+ *   · `vault` ($5 + IVA): una segunda bóveda de tu cuenta, que sella; su maestra va sellada con
+ *     una contraseña que pones al darla de alta (§5).
+ */
+export const PRODUCTS = Object.freeze({
+  replica: Object.freeze({ cents: 300, mode: 'replica', name: 'Dotrino hosted replica', description: 'A replica of your Dotrino vault in the cloud: your account answers with your computer off.' }),
+  vault: Object.freeze({ cents: 500, mode: 'join', name: 'Dotrino hosted vault', description: 'A second Dotrino vault in the cloud: your account keeps working, and can still add devices, if your computer is gone.' })
+})
+export const PRODUCT = 'replica'
+export const priceOf = (product) => Object.freeze({ ...priceWithTax({ unitCents: PRODUCTS[product].cents, taxPercent: TAX_PERCENT }), taxPercent: TAX_PERCENT, currency: 'USD', interval: 'month', product })
+export const PRICE = priceOf(PRODUCT)
 const DAY = 24 * 60 * 60 * 1000
 /** Cuánto se espera a que PayPal apunte el primer cobro antes de dar por hecho que no lo hubo. */
 /** El estado de una réplica que añadió el administrador a una cuenta: sin suscripción ni cobro. */
@@ -45,14 +56,22 @@ export class Accounts {
    * `shopUrl`: la página donde se compra, que es la de la BÓVEDA (`vault.dotrino.com/hosted`).
    * Allí vuelve PayPal (`?sub=<id>`) y desde allí se enrola.
    */
-  constructor ({ store, vaults, paypal = null, planId = null, webhookId = null, shopUrl = 'https://vault.dotrino.com/hosted', now = Date.now, log = () => {} }) {
-    Object.assign(this, { store, vaults, paypal, planId, webhookId, shopUrl, now, log })
+  /** `planIds`: el plan de PayPal de cada producto (`{ replica, vault }`). Uno sin plan no se vende. */
+  constructor ({ store, vaults, paypal = null, planIds = {}, webhookId = null, shopUrl = 'https://vault.dotrino.com/hosted', now = Date.now, log = () => {} }) {
+    Object.assign(this, { store, vaults, paypal, planIds, webhookId, shopUrl, now, log })
     this.lastStatus = new Map()
   }
 
-  #payments () {
-    if (!this.paypal || !this.planId) fail('payments-unavailable', 'payments are not configured')
+  #payments (product = null) {
+    if (!this.paypal) fail('payments-unavailable', 'payments are not configured')
+    if (product && !this.planIds[product]) fail('payments-unavailable', `there is no PayPal plan for ${product}`)
     return this.paypal
+  }
+
+  /** El producto de una compra: uno del catálogo, o se para. */
+  static product (name) {
+    if (!Object.hasOwn(PRODUCTS, name || '')) fail('bad-product', `there is no product ${name}`)
+    return name
   }
 
   /** La fila, si es de la cuenta que firma. Otra cuenta no sabe ni que existe. */
@@ -73,16 +92,18 @@ export class Accounts {
 
   /** 1. Empieza la compra, firmada por la cuenta: PayPal da el enlace para aprobarla. */
   async subscribe ({ req }) {
-    const account = await this.#signed(req, 'subscribe', { product: PRODUCT })
-    const paypal = this.#payments()
+    // Sin petición firmada no se mira nada más: eso lo dice `#signed`.
+    const product = req?.body ? Accounts.product(req.body.product) : null
+    const account = await this.#signed(req, 'subscribe', { product })
+    const paypal = this.#payments(product)
     const id = randomUUID()
     const { id: paypalId, approveUrl } = await paypal.createSubscription({
-      planId: this.planId, customId: id,
+      planId: this.planIds[product], customId: id,
       returnUrl: `${this.shopUrl}?sub=${id}`, cancelUrl: this.shopUrl
     })
     const ts = this.now()
-    this.store.insert({ id, account, product: PRODUCT, paypal_id: paypalId, status: 'APPROVAL_PENDING', created: ts, updated: ts })
-    return { id, approveUrl, price: PRICE }
+    this.store.insert({ id, account, product, paypal_id: paypalId, status: 'APPROVAL_PENDING', created: ts, updated: ts })
+    return { id, approveUrl, price: priceOf(product) }
   }
 
   /** 2. De vuelta de PayPal: si está activa, se crea la réplica (vacía). Repetirlo no crea otra. */
@@ -97,18 +118,49 @@ export class Accounts {
   /**
    * 3. ENROLARLA con la invitación que el dueño sacó en su bóveda. Devuelve el código que tiene
    * que aprobar allí. Si no lo aprueba a tiempo, se repite con otra invitación.
+   *
+   * La segunda bóveda (`vault`) pide antes su contraseña: aquí devuelve `door` (con qué derivarla
+   * y la llave efímera a la que sellarla), y el código llega con `enrollDoor`.
    */
   async enroll ({ id, invitation, req }) {
     const account = await this.#signed(req, 'enroll', { id })
-    let row = this.#ofAccount(id, account)
-    if (row.stack === 'creating') row = await this.progress(row)
-    if (row.stack !== 'ready') fail('not-ready', `the replica is ${row.stack}, not ready to be enrolled`)
-    if (row.enrolled) fail('already-enrolled', 'this replica is already in the account')
+    const row = await this.#enrollable(this.#ofAccount(id, account))
     if (typeof invitation !== 'string' || !invitation.trim() || invitation.length > 4096) fail('bad-request', 'enroll: no invitation')
     const r = await this.vaults.invoke(row.vault, { kind: 'enroll', invitation: invitation.trim() })
-    if (!r?.ok) fail(r?.error || 'enroll-failed', `enroll: ${r?.message || r?.error || 'the replica could not start the enrollment'}`)
+    if (!r?.ok) fail(r?.error || 'enroll-failed', `enroll: ${r?.message || r?.error || 'the vault could not start the enrollment'}`)
+    if (row.product === 'vault') {
+      this.log(`[accounts] ${row.id}: vault ${row.vault} waiting for its password`)
+      return { ...this.view(row), door: { req: r.req, ...r.door } }
+    }
+    return this.#waitingCode(row, r)
+  }
+
+  /**
+   * 3b. LA CONTRASEÑA DE LA SEGUNDA BÓVEDA: la derivada, sellada en el navegador a la efímera que
+   * dio `enroll`. Aquí no se puede abrir; se pasa a la bóveda, que nace con ella y devuelve el
+   * código que el dueño aprueba en la suya.
+   */
+  async enrollDoor ({ id, door, req }) {
+    const account = await this.#signed(req, 'enroll-door', { id })
+    const own = this.#ofAccount(id, account)
+    if (own.product !== 'vault') fail('bad-request', 'enroll-door: only a hosted vault takes a password')
+    const row = await this.#enrollable(own)
+    if (typeof door?.req !== 'string' || !door.req || !door.enc || JSON.stringify(door.enc).length > 4096) fail('bad-request', 'enroll-door: no sealed password')
+    const r = await this.vaults.invoke(row.vault, { kind: 'enroll-door', req: door.req, enc: door.enc })
+    if (!r?.ok) fail(r?.error || 'enroll-failed', `enroll-door: ${r?.message || r?.error || 'the vault did not take the password'}`)
+    return this.#waitingCode(row, r)
+  }
+
+  async #enrollable (row) {
+    if (row.stack === 'creating') row = await this.progress(row)
+    if (row.stack !== 'ready') fail('not-ready', `the ${row.product} is ${row.stack}, not ready to be enrolled`)
+    if (row.enrolled) fail('already-enrolled', `this ${row.product} is already in the account`)
+    return row
+  }
+
+  #waitingCode (row, r) {
     this.store.update(row.id, { device: r.deviceId, updated: this.now() })
-    this.log(`[accounts] ${row.id}: replica ${row.vault} waiting for code approval as ${r.deviceId}`)
+    this.log(`[accounts] ${row.id}: ${row.product} ${row.vault} waiting for code approval as ${r.deviceId}`)
     return { ...this.view(this.store.get(row.id)), code: r.code }
   }
 
@@ -131,7 +183,7 @@ export class Accounts {
     // buscar, en vez de dejar una réplica pagada sin dueño.
     this.store.update(row.id, { vault, stack: 'creating', updated: this.now() })
     try {
-      await this.vaults.create({ vault, owner: row.account })
+      await this.vaults.create({ vault, owner: row.account, mode: PRODUCTS[row.product].mode })
     } catch (e) {
       this.store.update(row.id, { stack: 'failed', note: `create: ${e.code || e.name}: ${e.message}`, updated: this.now() })
       this.log(`[accounts] ${row.id}: stack ${vault} not created: ${e.message}`)
@@ -144,7 +196,7 @@ export class Accounts {
 
   /** Mira cómo va la pila. */
   async progress (row) {
-    const d = await this.vaults.describe(row.vault)
+    const d = await this.vaults.describe(row.vault, PRODUCTS[row.product].mode)
     if (d.state === 'ready') {
       this.store.update(row.id, { stack: 'ready', vault_on: 1, updated: this.now() })
       this.log(`[accounts] ${row.id}: replica ${row.vault} ready, waiting for its owner to enroll it`)
@@ -205,9 +257,9 @@ export class Accounts {
   async refresh (row) {
     // Una réplica que añadió el administrador no tiene suscripción: no hay nada que preguntar.
     if (!row.paypal_id) fail('no-subscription', `${row.id} has no PayPal subscription (status ${row.status})`)
-    const s = await this.#payments().getSubscription(row.paypal_id)
+    const s = await this.#payments(row.product).getSubscription(row.paypal_id)
     if (s.customId !== row.id) fail('subscription-mismatch', `subscription ${row.paypal_id} is not ${row.id}`)
-    if (s.planId !== this.planId) fail('subscription-mismatch', `subscription ${row.paypal_id} is for plan ${s.planId}`)
+    if (s.planId !== this.planIds[row.product]) fail('subscription-mismatch', `subscription ${row.paypal_id} is for plan ${s.planId}`)
     // Cancelada, PayPal ya no dice hasta cuándo está pagada: vale lo que se apuntó mientras lo decía.
     const paidThrough = s.paidThrough ?? row.paid_through
     this.store.update(row.id, { status: s.status, paid_through: paidThrough, updated: this.now() })
@@ -368,16 +420,17 @@ export class Accounts {
   }
 
   /**
-   * Añade una réplica a la cuenta `account` (el `pubkeyId` de la llave de su perfil, 64 hex),
-   * sin cargo. Nace con `Owner` = esa cuenta, como una comprada, y el cliente la enrola desde
-   * su página con su invitación y su código: aquí no se ata a nada más.
+   * Añade una réplica o una segunda bóveda (`product`) a la cuenta `account` (el `pubkeyId` de la
+   * llave de su perfil, 64 hex), sin cargo. Nace con `Owner` = esa cuenta, como una comprada, y el
+   * cliente la enrola desde su página con su invitación y su código: aquí no se ata a nada más.
    */
-  async adminAddReplica ({ account, by }) {
+  async adminAddReplica ({ account, product = PRODUCT, by }) {
     if (typeof account !== 'string' || !/^[0-9a-f]{64}$/.test(account)) fail('bad-account', 'addReplica: account must be 64 lowercase hex (the pubkeyId of the profile key)')
+    Accounts.product(product)
     const id = randomUUID()
     const ts = this.now()
-    this.store.insert({ id, account, product: PRODUCT, status: COMP, created: ts, updated: ts })
-    this.log(`[accounts] admin ${by}: ${id} replica added to account ${account.slice(0, 16)}… (no charge)`)
+    this.store.insert({ id, account, product, status: COMP, created: ts, updated: ts })
+    this.log(`[accounts] admin ${by}: ${id} ${product} added to account ${account.slice(0, 16)}… (no charge)`)
     return this.adminView(await this.#provision(this.store.get(id)))
   }
 

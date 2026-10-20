@@ -1,5 +1,5 @@
 /**
- * Las réplicas alojadas, en AWS: una pila de CloudFormation por réplica, con la plantilla de la
+ * Las réplicas y bóvedas alojadas, en AWS: una pila de CloudFormation por cada una, con la plantilla de la
  * release de `dotrino-vault` (`lambda/template.yaml`) y la llave de KMS COMPARTIDA
  * (`SharedKeyArn`: $1/mes en total, y cada bóveda solo puede usarla con su nombre).
  *
@@ -55,11 +55,13 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
 
   return {
     /**
-     * Una RÉPLICA vacía (`Mode: replica`) que espera a que su dueño la enrole. `owner` es la
-     * cuenta que la pagó: la réplica nace sabiéndolo y rechaza la invitación de cualquier otra.
+     * Una pila vacía que espera a que su dueño la enrole: una réplica (`mode: 'replica'`) o una
+     * segunda bóveda (`'join'`). `owner` es la cuenta que la pagó: nace sabiéndolo y rechaza la
+     * invitación de cualquier otra.
      */
-    async create ({ vault, owner }) {
+    async create ({ vault, owner, mode }) {
       if (!/^[0-9a-f]{64}$/.test(owner || '')) throw Object.assign(new Error(`vaults: no owner for ${vault}`), { code: 'no-owner' })
+      if (mode !== 'replica' && mode !== 'join') throw Object.assign(new Error(`vaults: no stack mode ${mode}`), { code: 'bad-mode' })
       await cfn.send(new CreateStackCommand({
         StackName: stackName(vault),
         TemplateBody: await templateBody(),
@@ -67,7 +69,7 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
         RoleARN: cfnRoleArn,
         Parameters: [
           { ParameterKey: 'Name', ParameterValue: vault },
-          { ParameterKey: 'Mode', ParameterValue: 'replica' },
+          { ParameterKey: 'Mode', ParameterValue: mode },
           { ParameterKey: 'Owner', ParameterValue: owner },
           { ParameterKey: 'SharedKeyArn', ParameterValue: sharedKeyArn },
           { ParameterKey: 'PermissionsBoundary', ParameterValue: roleBoundaryArn }
@@ -77,27 +79,27 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
     },
 
     /** @returns {Promise<{ state:'creating'|'ready'|'failed', reason?:string }>} */
-    async describe (vault) {
+    async describe (vault, mode) {
       const r = await cfn.send(new DescribeStacksCommand({ StackName: stackName(vault) }))
       const s = r.Stacks?.[0]
       if (!s) throw Object.assign(new Error(`vaults: no stack for ${vault}`), { code: 'stack-not-found' })
       if (/_IN_PROGRESS$/.test(s.StackStatus) && !/ROLLBACK/.test(s.StackStatus)) return { state: 'creating' }
       if (s.StackStatus === 'CREATE_COMPLETE' || s.StackStatus === 'UPDATE_COMPLETE') {
         const out = Object.fromEntries((s.Outputs || []).map((o) => [o.OutputKey, o.OutputValue]))
-        if (out.Mode !== 'replica') throw Object.assign(new Error(`vaults: stack ${vault} is not a replica (Mode ${out.Mode}; template too old?)`), { code: 'stack-outputs' })
+        if (out.Mode !== mode) throw Object.assign(new Error(`vaults: stack ${vault} runs ${out.Mode}, not ${mode} (template too old?)`), { code: 'stack-outputs' })
         return { state: 'ready' }
       }
       return { state: 'failed', reason: `${s.StackStatus}${s.StackStatusReason ? ': ' + s.StackStatusReason : ''}${await firstFailure(vault)}` }
     },
 
-    /** Le habla a la función (`{ kind:'enroll' }`, `{ kind:'status' }`) y devuelve lo que conteste. */
+    /** Le habla a la función (`{ kind:'enroll' | 'enroll-door' | 'status' }`) y devuelve lo que conteste. */
     async invoke (vault, payload) {
       const r = await lambda.send(new InvokeCommand({ FunctionName: functionName(vault), InvocationType: 'RequestResponse', Payload: Buffer.from(JSON.stringify(payload)) }))
       if (r.FunctionError) throw Object.assign(new Error(`vaults: ${vault} failed on ${payload.kind}: ${r.FunctionError}`), { code: 'function-error' })
       return JSON.parse(Buffer.from(r.Payload || '').toString('utf8') || 'null')
     },
 
-    /** Borra la pila (las réplicas que nadie enroló). El bucket se queda: lo retiene la plantilla. */
+    /** Borra la pila (las que nadie enroló). El bucket se queda: lo retiene la plantilla. */
     async remove (vault) {
       await cfn.send(new DeleteStackCommand({ StackName: stackName(vault), RoleARN: cfnRoleArn }))
     },
