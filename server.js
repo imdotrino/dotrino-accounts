@@ -38,7 +38,7 @@ if (cmd === 'info') {
   console.log(`enrolled as a device of the Dotrino account (${link.iss.slice(0, 16)}…)`)
 } else if (cmd === 'serve') {
   const identity = await loadServiceIdentity({ log }).catch(die)
-  const s = await loadSecrets(identity, { log }).catch(die)
+  const s = await loadSecrets(identity, { log, product: 'accounts', version: pkg.version }).catch(die)
   const need = ['PAYPAL_CLIENT_ID', 'PAYPAL_SECRET', 'PAYPAL_REPLICA_PLAN_ID', 'PAYPAL_WEBHOOK_ID', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'VAULT_SHARED_KEY_ARN', 'VAULT_CFN_ROLE_ARN', 'VAULT_ROLE_BOUNDARY_ARN']
   const missing = need.filter((k) => !s[k])
   if (missing.length) die(Object.assign(new Error(`drawer "accounts" lacks ${missing.join(', ')}`), { code: 'misconfigured' }))
@@ -65,7 +65,9 @@ if (cmd === 'info') {
   let ra = null
   const admin = makeAdmin({ accounts, checkCap: (pub, cap) => ra.checkCap(pub, cap), log })
   ra = await startRemoteAgent({
-    label: LABEL, dir: identityDir(),
+    // Qué es, para la fila de este aparato en la bóveda. Necesita `sign` para abrir sesiones con
+    // `/admin`, y eso lo declara el propio pilar: si el acta no se lo da, la bóveda lo enseña.
+    label: LABEL, dir: identityDir(), product: 'accounts', version: pkg.version,
     onSession (session) {
       session.on('message', (msg) => {
         admin(session.device, msg)

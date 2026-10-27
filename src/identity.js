@@ -37,6 +37,6 @@ export async function loadServiceIdentity ({ dir = identityDir(), log = console.
 }
 
 /** Los secretos del cajón `accounts`. Espera a la bóveda: sin ella no se cobra ni se crean bóvedas. */
-export async function loadSecrets (identity, { log = console.log } = {}) {
-  return waitForSecrets({ ...identity.secretsArgs, onRetry: (e, ms) => log(`[vault] ${e.message}; retry in ${Math.round(ms / 1000)}s`) })
+export async function loadSecrets (identity, { log = console.log, product, version } = {}) {
+  return waitForSecrets({ ...identity.secretsArgs, product, version, onRetry: (e, ms) => log(`[vault] ${e.message}; retry in ${Math.round(ms / 1000)}s`) })
 }
