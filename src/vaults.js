@@ -16,34 +16,51 @@
  * con la llave del servicio y otra plantilla se podía crear un rol con cualquier permiso y
  * dárselo a una Lambda.
  *
- * La plantilla se baja de una URL fija y se comprueba su sha256 antes de usarla: el servicio
- * crea en la cuenta de Dotrino exactamente lo que dice la release, y nada más.
+ * LA PLANTILLA ES SIEMPRE LA DE LA ÚLTIMA RELEASE (dueño, 2026-10-27: «accounts siempre debe usar
+ * la última en su despliegue inicial»). Antes iba fijada a mano en el cajón (`VAULT_TEMPLATE_URL`
+ * + `VAULT_TEMPLATE_SHA256`) y se quedó en la 0.167: una bóveda nueva corre durante el alta el
+ * código de su plantilla, así que nacía con fallos ya arreglados. Ahora cada alta mira la última
+ * release de `dotrino-vault`, baja su plantilla y la comprueba contra la atestación de sigstore
+ * del `release.yml` (`@dotrino/update/fetch`): el servicio crea en la cuenta de Dotrino
+ * exactamente lo que compiló ese workflow, y nada más. La plantilla trae a su vez el sha256 del
+ * zip, que la pila comprueba al bajarlo. Si no se puede mirar o no se puede verificar, el alta
+ * se PARA y lo dice: no hay versión «de reserva».
  */
-import { createHash } from 'node:crypto'
+import { readFileSync, rmSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { latestVersion } from '@dotrino/update'
+import { fetchVerified } from '@dotrino/update/fetch'
 import { CloudFormationClient, CreateStackCommand, DeleteStackCommand, DescribeStacksCommand, DescribeStackEventsCommand } from '@aws-sdk/client-cloudformation'
 import { LambdaClient, InvokeCommand, PutFunctionConcurrencyCommand, DeleteFunctionConcurrencyCommand } from '@aws-sdk/client-lambda'
 
 export const stackName = (vault) => `dotrino-vault-${vault}`
 export const functionName = (vault) => `dotrino-vault-${vault}`
 
-export function awsVaults ({ region, credentials, templateUrl, templateSha256, sharedKeyArn, cfnRoleArn, roleBoundaryArn, fetch = globalThis.fetch }) {
-  for (const [k, v] of Object.entries({ region, templateUrl, templateSha256, sharedKeyArn, cfnRoleArn, roleBoundaryArn })) {
+export const VAULT_REPO = 'imdotrino/dotrino-vault'
+
+/**
+ * La plantilla de la ÚLTIMA release, verificada. `latest` y `verified` se inyectan en las pruebas.
+ * @returns {Promise<{ version: string, body: string }>}
+ */
+export async function latestTemplate ({ repo = VAULT_REPO, latest = latestVersion, verified = fetchVerified, fetch = globalThis.fetch } = {}) {
+  const rel = await latest({ source: 'github', repo, fetchImpl: fetch, product: 'dotrino-accounts' })
+  if (!rel.ok) throw Object.assign(new Error(`vaults: could not read the latest release of ${repo}: ${rel.reason}`), { code: 'template-unavailable' })
+  const name = `dotrino-vault-lambda-${rel.version}.yaml`
+  const asset = (rel.assets || []).find((a) => a.name === name)
+  if (!asset) throw Object.assign(new Error(`vaults: release ${rel.version} of ${repo} has no ${name}`), { code: 'template-unavailable' })
+  const v = await verified(asset, { repo, fetchImpl: fetch, product: 'dotrino-accounts' })
+  try {
+    if (!v.ok) throw Object.assign(new Error(`vaults: the template of ${rel.version} does not verify: ${v.reason}`), { code: 'template-unverified' })
+    return { version: rel.version, body: readFileSync(v.file, 'utf8') }
+  } finally { if (v.file) rmSync(dirname(v.file), { recursive: true, force: true }) }
+}
+
+export function awsVaults ({ region, credentials, sharedKeyArn, cfnRoleArn, roleBoundaryArn, template = latestTemplate, log = () => {} }) {
+  for (const [k, v] of Object.entries({ region, sharedKeyArn, cfnRoleArn, roleBoundaryArn })) {
     if (!v) throw Object.assign(new Error(`vaults: ${k} is required`), { code: 'vaults-misconfigured' })
   }
   const cfn = new CloudFormationClient({ region, credentials })
   const lambda = new LambdaClient({ region, credentials })
-  let template = null
-
-  async function templateBody () {
-    if (template) return template
-    const res = await fetch(templateUrl)
-    if (!res.ok) throw Object.assign(new Error(`vaults: template ${res.status} at ${templateUrl}`), { code: 'template-unavailable' })
-    const body = await res.text()
-    const sha = createHash('sha256').update(body).digest('hex')
-    if (sha !== templateSha256) throw Object.assign(new Error(`vaults: template sha256 ${sha} is not the expected one`), { code: 'template-mismatch' })
-    template = body
-    return template
-  }
 
   // El estado final de una pila rota dice cómo acabó el ROLLBACK, no por qué empezó: la causa
   // es el primer recurso que falló al crearse, y esa está en los eventos.
@@ -62,9 +79,11 @@ export function awsVaults ({ region, credentials, templateUrl, templateSha256, s
     async create ({ vault, owner, mode }) {
       if (!/^[0-9a-f]{64}$/.test(owner || '')) throw Object.assign(new Error(`vaults: no owner for ${vault}`), { code: 'no-owner' })
       if (mode !== 'replica' && mode !== 'join') throw Object.assign(new Error(`vaults: no stack mode ${mode}`), { code: 'bad-mode' })
+      const t = await template()
+      log(`[accounts] ${vault}: creating the stack from dotrino-vault ${t.version} (the latest release, verified)`)
       await cfn.send(new CreateStackCommand({
         StackName: stackName(vault),
-        TemplateBody: await templateBody(),
+        TemplateBody: t.body,
         Capabilities: ['CAPABILITY_IAM'],
         RoleARN: cfnRoleArn,
         Parameters: [
