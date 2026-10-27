@@ -125,7 +125,7 @@ de AWS de Dotrino. En reposo, no.
 
 **Nacer** es lo único nuevo, porque la maestra no puede tocar el disco en claro ni un instante:
 
-1. `/hosted`: el cliente pega la invitación de su bóveda (`pair --scope sella`) y elige la
+1. `/hosted`: el cliente pega la invitación de su bóveda (`pair --scope sealer`) y elige la
    contraseña (mínimo 12, como en escritorio).
 2. `accounts` → Lambda `{ kind:'enroll', invitation }`: la Lambda lanza el alta, que crea una
    efímera **en memoria** y devuelve `{ ek, salt, params }`.
@@ -200,7 +200,7 @@ Cambia lo que dicen §3 y §5 sobre la bóveda alojada:
 - **Primero la réplica** ($3, §9): no tiene maestra, así que alguien con acceso a la cuenta de AWS
   no puede firmar por el cliente.
 - **Después la segunda bóveda** ($5, el multivault de `dotrino-vault/docs/replicas.md` §1.bis:
-  entra con `join`, tiene maestra y `+sella`). **No sale a la venta hasta que su maestra vaya
+  entra con `join`, tiene maestra y `+sealer`). **No sale a la venta hasta que su maestra vaya
   sellada con la contraseña del cliente** (§5): sin eso es un sellador abierto en la cuenta de
   Dotrino, que es justo lo que se desmontó en EC2 el 2026-09-02. Hecho el 2026-10-19 (vaultd
   0.168.0, `Mode: join`); falta abrirla a distancia (§5).
