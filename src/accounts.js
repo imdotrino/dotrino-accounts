@@ -33,7 +33,20 @@ export const PRODUCTS = Object.freeze({
   replica: Object.freeze({ cents: 300, mode: 'replica', name: 'Dotrino hosted replica', description: 'A replica of your Dotrino vault in the cloud: your account answers with your computer off.' }),
   vault: Object.freeze({ cents: 500, mode: 'join', name: 'Dotrino hosted vault', description: 'A second Dotrino vault in the cloud: your account keeps working, and can still add devices, if your computer is gone.' })
 })
+/** @typedef {keyof typeof PRODUCTS} Product */
+/** @typedef {import('./store.js').SubRow} SubRow */
+/** @typedef {import('./vaults.js').Vaults} Vaults */
+/** @typedef {import('@dotrino/pay').PayPalClient} PayPalClient */
+
+/**
+ * Una petición firmada por un aparato de la cuenta del cliente.
+ * @typedef {{ body?: any, signature?: string, publickey?: string, chain?: unknown[] }} SignedRequest
+ *   `body` llega de la red sin comprobar: `#signed` lo verifica campo a campo.
+ */
+
+/** @type {Product} */
 export const PRODUCT = 'replica'
+/** @param {Product} product */
 export const priceOf = (product) => Object.freeze({ ...priceWithTax({ unitCents: PRODUCTS[product].cents, taxPercent: TAX_PERCENT }), taxPercent: TAX_PERCENT, currency: 'USD', interval: 'month', product })
 export const PRICE = priceOf(PRODUCT)
 const DAY = 24 * 60 * 60 * 1000
@@ -47,9 +60,16 @@ export const ENROLL_WITHIN_MS = DAY
 const STATUS_EVERY_MS = 10_000
 
 export class AccountsError extends Error {
+  /** @param {string} code @param {string} message */
   constructor (code, message) { super(message); this.code = code }
 }
+/** @type {(code: string, message: string) => never} */
 const fail = (code, message) => { throw new AccountsError(code, message) }
+
+/** El nombre de la pila de una fila. Sin pila no hay a quién hablarle: se para y se dice. */
+const vaultOf = (/** @type {SubRow} */ row) => row.vault || fail('no-stack', `${row.id}: no replica was ever created`)
+/** La suscripción de PayPal de una fila. */
+const paypalOf = (/** @type {SubRow} */ row) => row.paypal_id || fail('no-subscription', `${row.id} has no PayPal subscription (status ${row.status})`)
 
 export class Accounts {
   /**
@@ -57,11 +77,28 @@ export class Accounts {
    * Allí vuelve PayPal (`?sub=<id>`) y desde allí se enrola.
    */
   /** `planIds`: el plan de PayPal de cada producto (`{ replica, vault }`). Uno sin plan no se vende. */
+  /**
+   * @param {{ store: import('./store.js').Store, vaults: Vaults, paypal?: PayPalClient | null,
+   *   planIds?: Partial<Record<Product, string>>, webhookId?: string | null, shopUrl?: string,
+   *   now?: () => number, log?: (...a: unknown[]) => void }} o
+   */
   constructor ({ store, vaults, paypal = null, planIds = {}, webhookId = null, shopUrl = 'https://vault.dotrino.com/hosted', now = Date.now, log = () => {} }) {
-    Object.assign(this, { store, vaults, paypal, planIds, webhookId, shopUrl, now, log })
+    this.store = store
+    this.vaults = vaults
+    this.paypal = paypal
+    this.planIds = planIds
+    this.webhookId = webhookId
+    this.shopUrl = shopUrl
+    this.now = now
+    this.log = log
+    /** @type {Map<string, number>} */
     this.lastStatus = new Map()
   }
 
+  /**
+   * @param {Product | null} [product]
+   * @returns {PayPalClient}
+   */
   #payments (product = null) {
     if (!this.paypal) fail('payments-unavailable', 'payments are not configured')
     if (product && !this.planIds[product]) fail('payments-unavailable', `there is no PayPal plan for ${product}`)
@@ -69,12 +106,21 @@ export class Accounts {
   }
 
   /** El producto de una compra: uno del catálogo, o se para. */
+  /**
+   * @param {unknown} name
+   * @returns {Product}
+   */
   static product (name) {
-    if (!Object.hasOwn(PRODUCTS, name || '')) fail('bad-product', `there is no product ${name}`)
-    return name
+    if (typeof name !== 'string' || !Object.hasOwn(PRODUCTS, name)) fail('bad-product', `there is no product ${name}`)
+    return /** @type {Product} */ (name)
   }
 
   /** La fila, si es de la cuenta que firma. Otra cuenta no sabe ni que existe. */
+  /**
+   * @param {unknown} id
+   * @param {string} account
+   * @returns {SubRow}
+   */
   #ofAccount (id, account) {
     const row = this.store.get(String(id || ''))
     if (!row || row.account !== account) fail('sub-not-found', 'no such subscription for this account')
@@ -82,6 +128,7 @@ export class Accounts {
   }
 
   /** Lo que se enseña de una suscripción. */
+  /** @param {SubRow} row */
   view (row) {
     return {
       id: row.id, product: row.product, status: row.status, paidThrough: row.paid_through,
@@ -91,14 +138,17 @@ export class Accounts {
   }
 
   /** 1. Empieza la compra, firmada por la cuenta: PayPal da el enlace para aprobarla. */
+  /** @param {{ req: SignedRequest }} o */
   async subscribe ({ req }) {
     // Sin petición firmada no se mira nada más: eso lo dice `#signed`.
     const product = req?.body ? Accounts.product(req.body.product) : null
     const account = await this.#signed(req, 'subscribe', { product })
+    // `#signed` ya paró si no había cuerpo, así que aquí `product` es uno del catálogo.
+    if (!product) return fail('bad-product', 'subscribe: no product')
     const paypal = this.#payments(product)
     const id = randomUUID()
     const { id: paypalId, approveUrl } = await paypal.createSubscription({
-      planId: this.planIds[product], customId: id,
+      planId: /** @type {string} */ (this.planIds[product]), customId: id,  // `#payments(product)` comprobó que existe
       returnUrl: `${this.shopUrl}?sub=${id}`, cancelUrl: this.shopUrl
     })
     const ts = this.now()
@@ -107,6 +157,7 @@ export class Accounts {
   }
 
   /** 2. De vuelta de PayPal: si está activa, se crea la réplica (vacía). Repetirlo no crea otra. */
+  /** @param {{ id: unknown, req: SignedRequest }} o */
   async confirm ({ id, req }) {
     const account = await this.#signed(req, 'confirm', { id })
     let row = await this.refresh(this.#ofAccount(id, account))
@@ -122,11 +173,12 @@ export class Accounts {
    * La segunda bóveda (`vault`) pide antes su contraseña: aquí devuelve `door` (con qué derivarla
    * y la llave efímera a la que sellarla), y el código llega con `enrollDoor`.
    */
+  /** @param {{ id: unknown, invitation: unknown, req: SignedRequest }} o */
   async enroll ({ id, invitation, req }) {
     const account = await this.#signed(req, 'enroll', { id })
     const row = await this.#enrollable(this.#ofAccount(id, account))
     if (typeof invitation !== 'string' || !invitation.trim() || invitation.length > 4096) fail('bad-request', 'enroll: no invitation')
-    const r = await this.vaults.invoke(row.vault, { kind: 'enroll', invitation: invitation.trim() })
+    const r = await this.vaults.invoke(vaultOf(row), { kind: 'enroll', invitation: invitation.trim() })
     if (!r?.ok) fail(r?.error || 'enroll-failed', `enroll: ${r?.message || r?.error || 'the vault could not start the enrollment'}`)
     if (row.product === 'vault') {
       this.log(`[accounts] ${row.id}: vault ${row.vault} waiting for its password`)
@@ -140,17 +192,19 @@ export class Accounts {
    * dio `enroll`. Aquí no se puede abrir; se pasa a la bóveda, que nace con ella y devuelve el
    * código que el dueño aprueba en la suya.
    */
+  /** @param {{ id: unknown, door: any, req: SignedRequest }} o  `door` llega de la red y se comprueba aquí */
   async enrollDoor ({ id, door, req }) {
     const account = await this.#signed(req, 'enroll-door', { id })
     const own = this.#ofAccount(id, account)
     if (own.product !== 'vault') fail('bad-request', 'enroll-door: only a hosted vault takes a password')
     const row = await this.#enrollable(own)
     if (typeof door?.req !== 'string' || !door.req || !door.enc || JSON.stringify(door.enc).length > 4096) fail('bad-request', 'enroll-door: no sealed password')
-    const r = await this.vaults.invoke(row.vault, { kind: 'enroll-door', req: door.req, enc: door.enc })
+    const r = await this.vaults.invoke(vaultOf(row), { kind: 'enroll-door', req: door.req, enc: door.enc })
     if (!r?.ok) fail(r?.error || 'enroll-failed', `enroll-door: ${r?.message || r?.error || 'the vault did not take the password'}`)
     return this.#waitingCode(row, r)
   }
 
+  /** @param {SubRow} row @returns {Promise<SubRow>} */
   async #enrollable (row) {
     if (row.stack === 'creating') row = await this.progress(row)
     if (row.stack !== 'ready') fail('not-ready', `the ${row.product} is ${row.stack}, not ready to be enrolled`)
@@ -158,25 +212,28 @@ export class Accounts {
     return row
   }
 
+  /** @param {SubRow} row @param {import('./vaults.js').VaultReply} r */
   #waitingCode (row, r) {
     this.store.update(row.id, { device: r.deviceId, updated: this.now() })
     this.log(`[accounts] ${row.id}: ${row.product} ${row.vault} waiting for code approval as ${r.deviceId}`)
-    return { ...this.view(this.store.get(row.id)), code: r.code }
+    return { ...this.view(this.#row(row.id)), code: r.code }
   }
 
   /** ¿Ya la aprobó? Se le pregunta a la réplica, como mucho cada pocos segundos. */
+  /** @param {SubRow} row @returns {Promise<SubRow>} */
   async #checkEnrolled (row) {
     if (row.stack !== 'ready' || row.enrolled) return row
     if (this.now() - (this.lastStatus.get(row.id) || 0) < STATUS_EVERY_MS) return row
     this.lastStatus.set(row.id, this.now())
-    const st = await this.vaults.invoke(row.vault, { kind: 'status' })
+    const st = await this.vaults.invoke(vaultOf(row), { kind: 'status' })
     if (!st?.ok) { this.log(`[accounts] ${row.id}: replica status failed: ${st?.error} ${st?.message || ''}`); return row }
     if (!st.enrolled) return row
     this.store.update(row.id, { enrolled: 1, device: st.deviceId, updated: this.now() })
     this.log(`[accounts] ${row.id}: replica ${row.vault} enrolled as ${st.deviceId}`)
-    return this.store.get(row.id)
+    return this.#row(row.id)
   }
 
+  /** @param {SubRow} row @returns {Promise<SubRow>} */
   async #provision (row) {
     const vault = 'h' + randomBytes(6).toString('hex')
     // Se apunta ANTES de crear la pila: si el proceso muere a mitad, la fila dice qué pila
@@ -185,53 +242,57 @@ export class Accounts {
     try {
       await this.vaults.create({ vault, owner: row.account, mode: PRODUCTS[row.product].mode })
     } catch (e) {
-      this.store.update(row.id, { stack: 'failed', note: `create: ${e.code || e.name}: ${e.message}`, updated: this.now() })
-      this.log(`[accounts] ${row.id}: stack ${vault} not created: ${e.message}`)
-      await this.#giveBack(this.store.get(row.id), 'the replica could not be created')
-      return this.store.get(row.id)
+      const err = /** @type {Error & { code?: string }} */ (e)
+      this.store.update(row.id, { stack: 'failed', note: `create: ${err.code || err.name}: ${err.message}`, updated: this.now() })
+      this.log(`[accounts] ${row.id}: stack ${vault} not created: ${err.message}`)
+      await this.#giveBack(this.#row(row.id), 'the replica could not be created')
+      return this.#row(row.id)
     }
     this.log(`[accounts] ${row.id}: creating replica ${vault}`)
-    return this.store.get(row.id)
+    return this.#row(row.id)
   }
 
   /** Mira cómo va la pila. */
+  /** @param {SubRow} row @returns {Promise<SubRow>} */
   async progress (row) {
-    const d = await this.vaults.describe(row.vault, PRODUCTS[row.product].mode)
+    const d = await this.vaults.describe(vaultOf(row), PRODUCTS[row.product].mode)
     if (d.state === 'ready') {
       this.store.update(row.id, { stack: 'ready', vault_on: 1, updated: this.now() })
       this.log(`[accounts] ${row.id}: replica ${row.vault} ready, waiting for its owner to enroll it`)
-      return this.reconcile(this.store.get(row.id))
+      return this.reconcile(this.#row(row.id))
     }
     if (d.state === 'failed') {
       this.store.update(row.id, { stack: 'failed', note: d.reason, updated: this.now() })
       this.log(`[accounts] ${row.id}: replica ${row.vault} failed: ${d.reason}`)
-      await this.#giveBack(this.store.get(row.id), 'the replica could not be created')
+      await this.#giveBack(this.#row(row.id), 'the replica could not be created')
     }
-    return this.store.get(row.id)
+    return this.#row(row.id)
   }
 
   /**
    * NADIE LA ENROLÓ A TIEMPO: no se deja corriendo ni cobrándose. Se cancela, se devuelve lo
    * cobrado y se borra la pila (el bucket se queda, vacío de cuenta: no cuesta).
    */
+  /** @param {SubRow} row */
   async #expire (row) {
     this.log(`[accounts] ${row.id}: replica ${row.vault} was not enrolled within ${ENROLL_WITHIN_MS / 3600000} h: removing it`)
     await this.#giveBack(row, 'the replica was not enrolled in time')
-    await this.vaults.remove(row.vault)
+    await this.vaults.remove(vaultOf(row))
     this.store.update(row.id, { stack: 'deleted', vault_on: 0, note: 'not enrolled in time', updated: this.now() })
   }
 
   /** Sin réplica no se cobra: la suscripción se cancela y lo que ya se cobró se devuelve. */
+  /** @param {SubRow} row @param {string} reason */
   async #giveBack (row, reason) {
     if (!row.paypal_id || !this.paypal) return
     try {
       await this.paypal.cancelSubscription(row.paypal_id, reason)
       await this.refresh(row)
-    } catch (e) { this.log(`[accounts] ${row.id}: could not cancel (${reason}): ${e.message}`) }
+    } catch (e) { this.log(`[accounts] ${row.id}: could not cancel (${reason}): ${/** @type {Error} */ (e).message}`) }
     this.store.update(row.id, { refund: 'pending', updated: this.now() })
     try {
-      await this.settleRefund(this.store.get(row.id))
-    } catch (e) { this.log(`[accounts] ${row.id}: refund not done yet: ${e.code || ''} ${e.message}`) }
+      await this.settleRefund(this.#row(row.id))
+    } catch (e) { const err = /** @type {Error & { code?: string }} */ (e); this.log(`[accounts] ${row.id}: refund not done yet: ${err.code || ''} ${err.message}`) }
   }
 
   /**
@@ -239,11 +300,13 @@ export class Accounts {
    * minutos después de aprobar, así que justo al fallar puede no haber nada que devolver
    * todavía: queda 'pending' y el barrido lo vuelve a mirar.
    */
+  /** @param {SubRow} row @returns {Promise<SubRow>} */
   async settleRefund (row) {
-    const pays = await this.#payments().subscriptionPayments(row.paypal_id, { since: row.created - DAY, until: this.now() })
+    const paypal = this.#payments()
+    const pays = await paypal.subscriptionPayments(paypalOf(row), { since: row.created - DAY, until: this.now() })
     const due = pays.filter((p) => p.status === 'COMPLETED')
     for (const p of due) {
-      const r = await this.paypal.refundCapture(p.id, { note: 'Your replica could not be set up.' })
+      const r = await paypal.refundCapture(p.id, { note: 'Your replica could not be set up.' })
       this.log(`[accounts] ${row.id}: refunded ${p.amount} (${p.id} → ${r.id} ${r.status})`)
     }
     if (due.length || pays.some((p) => p.status === 'REFUNDED')) this.store.update(row.id, { refund: 'done', updated: this.now() })
@@ -251,48 +314,57 @@ export class Accounts {
       this.store.update(row.id, { refund: 'none', updated: this.now() })
       this.log(`[accounts] ${row.id}: nothing was charged, nothing to refund`)
     }
-    return this.store.get(row.id)
+    return this.#row(row.id)
   }
 
+  /** @param {SubRow} row @returns {Promise<SubRow>} */
   async refresh (row) {
     // Una réplica que añadió el administrador no tiene suscripción: no hay nada que preguntar.
-    if (!row.paypal_id) fail('no-subscription', `${row.id} has no PayPal subscription (status ${row.status})`)
-    const s = await this.#payments(row.product).getSubscription(row.paypal_id)
+    const paypalId = paypalOf(row)
+    const s = await this.#payments(row.product).getSubscription(paypalId)
     if (s.customId !== row.id) fail('subscription-mismatch', `subscription ${row.paypal_id} is not ${row.id}`)
     if (s.planId !== this.planIds[row.product]) fail('subscription-mismatch', `subscription ${row.paypal_id} is for plan ${s.planId}`)
     // Cancelada, PayPal ya no dice hasta cuándo está pagada: vale lo que se apuntó mientras lo decía.
     const paidThrough = s.paidThrough ?? row.paid_through
     this.store.update(row.id, { status: s.status, paid_through: paidThrough, updated: this.now() })
     if (s.status !== row.status) this.log(`[accounts] ${row.id}: ${row.status} → ${s.status}`)
-    return this.reconcile(this.store.get(row.id))
+    return this.reconcile(this.#row(row.id))
   }
 
   /**
    * ¿Tiene que estar encendida? Si el administrador la encendió o la apagó a mano, eso; si no,
    * activa, sin cargo (la añadió el administrador), o pagada hasta una fecha que no ha llegado.
    */
+  /** @param {SubRow} row @returns {boolean} */
   shouldBeOn (row) {
     if (row.admin_on === 0 || row.admin_on === 1) return row.admin_on === 1
-    return row.status === 'ACTIVE' || row.status === COMP || (Number.isFinite(row.paid_through) && this.now() < row.paid_through)
+    return row.status === 'ACTIVE' || row.status === COMP || (row.paid_through !== null && Number.isFinite(row.paid_through) && this.now() < row.paid_through)
   }
 
+  /** @param {SubRow} row @returns {Promise<SubRow>} */
   async reconcile (row) {
     if (row.stack !== 'ready') return row
     const on = this.shouldBeOn(row)
     if (on === !!row.vault_on) return row
-    await this.vaults.setOn(row.vault, on)
+    await this.vaults.setOn(vaultOf(row), on)
     this.store.update(row.id, { vault_on: on ? 1 : 0, updated: this.now() })
     this.log(`[accounts] ${row.id}: vault ${row.vault} ${on ? 'turned on' : 'turned off'}`)
-    return this.store.get(row.id)
+    return this.#row(row.id)
   }
 
   /** Una petición firmada por un aparato de una cuenta. Devuelve la cuenta (64 hex). */
+  /**
+   * @param {SignedRequest | undefined} req
+   * @param {string} op
+   * @param {Record<string, unknown>} [extra]  campos que el cuerpo firmado tiene que traer igual
+   * @returns {Promise<string>}
+   */
   async #signed (req, op, extra = {}) {
     if (!req?.body || typeof req.body !== 'object') fail('bad-request', `${op}: no signed request`)
     const now = this.now()
     const v = await verifySignedFor({ data: req.body, signature: req.signature, publickey: req.publickey, chain: req.chain, audience: AUDIENCE, now })
     if (!v.ok) fail('bad-request-signature', `${op}: ${v.reason}`)
-    const b = req.body
+    const b = /** @type {SignedRequest} */ (req).body  // comprobado arriba
     if (b.v !== FORMAT_V) fail('bad-version', `${op}: request version ${b.v}`)
     if (b.op !== op) fail('request-mismatch', `${op}: request is for ${b.op}`)
     for (const [k, val] of Object.entries(extra)) if (b[k] !== val) fail('request-mismatch', `${op}: request ${k} differs`)
@@ -303,6 +375,7 @@ export class Accounts {
   }
 
   /** Las suscripciones de la cuenta que firma. */
+  /** @param {{ req: SignedRequest }} o */
   async mine ({ req }) {
     const account = await this.#signed(req, 'mine')
     const out = []
@@ -310,27 +383,30 @@ export class Accounts {
       try {
         if (row.stack === 'creating') row = await this.progress(row)
         row = await this.#checkEnrolled(row)
-      } catch (e) { this.log(`[accounts] mine ${row.id}: ${e.code || ''} ${e.message}`) }
+      } catch (e) { const err = /** @type {Error & { code?: string }} */ (e); this.log(`[accounts] mine ${row.id}: ${err.code || ''} ${err.message}`) }
       out.push(this.view(row))
     }
     return out
   }
 
   /** Cancelar: sigue encendida hasta el fin de lo pagado, y entonces se apaga (no se borra). */
+  /** @param {{ id: unknown, req: SignedRequest }} o */
   async cancel ({ id, req }) {
     const account = await this.#signed(req, 'cancel', { id })
     const row = this.#ofAccount(id, account)
-    if (row.status === 'ACTIVE' || row.status === 'SUSPENDED') await this.#payments().cancelSubscription(row.paypal_id)
+    if (row.status === 'ACTIVE' || row.status === 'SUSPENDED') await this.#payments().cancelSubscription(paypalOf(row))
     return this.view(await this.refresh(row))
   }
 
   /** Un aviso de PayPal. Se comprueba con PayPal, se apunta una vez, y se mira la suscripción. */
+  /** @param {{ headers: Record<string, string | string[] | undefined>, raw: string }} o */
   async webhook ({ headers, raw }) {
     const paypal = this.#payments()
     if (!this.webhookId) fail('payments-unavailable', 'webhook id is not configured')
+    /** @type {any} */  // el aviso de PayPal, que se comprueba con PayPal justo debajo
     let event
     try { event = JSON.parse(raw) } catch (_) { fail('bad-json', 'webhook body is not JSON') }
-    if (!await paypal.verifyWebhook({ headers, event, webhookId: this.webhookId })) fail('bad-webhook-signature', 'PayPal did not confirm this webhook')
+    if (!await paypal.verifyWebhook({ headers, event, webhookId: /** @type {string} */ (this.webhookId) })) fail('bad-webhook-signature', 'PayPal did not confirm this webhook')
     const r = event.resource || {}
     const paypalId = event.event_type?.startsWith('BILLING.SUBSCRIPTION.') ? r.id : r.billing_agreement_id
     const row = paypalId ? this.store.byPaypal(paypalId) : null
@@ -345,6 +421,7 @@ export class Accounts {
    * tiempo, reintenta las devoluciones y pregunta a PayPal por cada suscripción (el webhook
    * avisa antes, pero no es la única fuente). Un fallo en una fila se dice y no para las demás.
    */
+  /** @returns {Promise<number>} cuántas filas se miraron */
   async sweep () {
     let n = 0
     for (let row of this.store.live()) {
@@ -355,9 +432,9 @@ export class Accounts {
           if (!row.enrolled && this.now() - row.created > ENROLL_WITHIN_MS) { await this.#expire(row); n++; continue }
         }
         if (row.refund === 'pending') await this.settleRefund(row)
-        if (row.paypal_id && row.status !== 'APPROVAL_PENDING') await this.refresh(this.store.get(row.id))
+        if (row.paypal_id && row.status !== 'APPROVAL_PENDING') await this.refresh(this.#row(row.id))
         n++
-      } catch (e) { this.log(`[accounts] sweep ${row.id}: ${e.code || ''} ${e.message}`) }
+      } catch (e) { const err = /** @type {Error & { code?: string }} */ (e); this.log(`[accounts] sweep ${row.id}: ${err.code || ''} ${err.message}`) }
     }
     return n
   }
@@ -369,10 +446,22 @@ export class Accounts {
   // decidido: `by` es el ID de ese aparato, para la bitácora.
 
   /** Lo que ve el administrador de una fila: lo del cliente y además de quién es y qué la sostiene. */
+  /** @param {SubRow} row */
   adminView (row) {
     return { ...this.view(row), account: row.account, vault: row.vault, paypalId: row.paypal_id, refund: row.refund, adminOn: row.admin_on === null ? null : !!row.admin_on }
   }
 
+  /**
+   * Una fila que se acaba de escribir o de leer: tiene que estar. Si no está, algo la borró
+   * por debajo, y se para.
+   * @param {string} id
+   * @returns {SubRow}
+   */
+  #row (id) {
+    return this.store.get(id) || fail('sub-not-found', `subscription ${id} vanished from the store`)
+  }
+
+  /** @param {unknown} id @returns {SubRow} */
   #adminRow (id) {
     const row = this.store.get(String(id || ''))
     if (!row) fail('sub-not-found', `no subscription ${id}`)
@@ -380,6 +469,7 @@ export class Accounts {
   }
 
   /** Todas las suscripciones y réplicas del servicio, de todas las cuentas. */
+  /** @param {{ by: string }} o */
   async adminList ({ by }) {
     const rows = this.store.all()
     this.log(`[accounts] admin ${by}: list (${rows.length})`)
@@ -390,33 +480,36 @@ export class Accounts {
    * Encender o apagar a mano. `on: true|false` fija el interruptor y pasa por encima del pago;
    * `on: null` lo suelta y vuelve a mandar el pago.
    */
+  /** @param {{ id: unknown, on: unknown, by: string }} o */
   async adminSetOn ({ id, on, by }) {
     if (on !== true && on !== false && on !== null) fail('bad-request', 'setOn: on must be true, false or null')
     const row = this.#adminRow(id)
     if (row.stack !== 'ready') fail('not-ready', `the replica is ${row.stack}, it cannot be turned on or off`)
     this.store.update(row.id, { admin_on: on === null ? null : on ? 1 : 0, updated: this.now() })
     this.log(`[accounts] admin ${by}: ${row.id} switch ${on === null ? 'released (follows payment)' : on ? 'forced on' : 'forced off'}`)
-    return this.adminView(await this.reconcile(this.store.get(row.id)))
+    return this.adminView(await this.reconcile(this.#row(row.id)))
   }
 
   /** Devuelve el ÚLTIMO cobro de la suscripción. No la cancela: eso es otra decisión. */
+  /** @param {{ id: unknown, by: string }} o */
   async adminRefund ({ id, by }) {
     const row = this.#adminRow(id)
-    if (!row.paypal_id) fail('no-subscription', `${row.id} has no PayPal subscription: nothing to refund`)
-    const pays = await this.#payments().subscriptionPayments(row.paypal_id, { since: row.created - DAY, until: this.now() })
+    const paypalId = row.paypal_id || fail('no-subscription', `${row.id} has no PayPal subscription: nothing to refund`)
+    const paypal = this.#payments()
+    const pays = await paypal.subscriptionPayments(paypalId, { since: row.created - DAY, until: this.now() })
     const last = pays.filter((p) => p.status === 'COMPLETED').sort((a, b) => b.time - a.time)[0]
     if (!last) fail('nothing-to-refund', `${row.id}: no completed payment to refund`)
-    const r = await this.paypal.refundCapture(last.id, { note: 'Refund from Dotrino.' })
+    const r = await paypal.refundCapture(last.id, { note: 'Refund from Dotrino.' })
     this.store.update(row.id, { refund: 'done', updated: this.now() })
     this.log(`[accounts] admin ${by}: ${row.id} refunded ${last.amount} (${last.id} → ${r.id} ${r.status})`)
     // DEVOLVER TAMBIÉN CANCELA (dueño, 2026-10-19): no se sigue cobrando lo que se devolvió. La
     // réplica sigue hasta el fin de lo pagado y se apaga, como cualquier cancelación.
     if (row.status === 'ACTIVE' || row.status === 'SUSPENDED') {
-      await this.#payments().cancelSubscription(row.paypal_id, 'refunded by the administrator')
-      await this.refresh(this.store.get(row.id))
+      await paypal.cancelSubscription(paypalId, 'refunded by the administrator')
+      await this.refresh(this.#row(row.id))
       this.log(`[accounts] admin ${by}: ${row.id} subscription cancelled after the refund`)
     }
-    return { ...this.adminView(this.store.get(row.id)), refunded: { capture: last.id, amount: last.amount, refund: r.id, status: r.status } }
+    return { ...this.adminView(this.#row(row.id)), refunded: { capture: last.id, amount: last.amount, refund: r.id, status: r.status } }
   }
 
   /**
@@ -424,31 +517,34 @@ export class Accounts {
    * llave de su perfil, 64 hex), sin cargo. Nace con `Owner` = esa cuenta, como una comprada, y el
    * cliente la enrola desde su página con su invitación y su código: aquí no se ata a nada más.
    */
-  async adminAddReplica ({ account, product = PRODUCT, by }) {
+  /** @param {{ account: unknown, product?: unknown, by: string }} o */
+  async adminAddReplica ({ account, product: asked = PRODUCT, by }) {
     if (typeof account !== 'string' || !/^[0-9a-f]{64}$/.test(account)) fail('bad-account', 'addReplica: account must be 64 lowercase hex (the pubkeyId of the profile key)')
-    Accounts.product(product)
+    const product = Accounts.product(asked)
     const id = randomUUID()
     const ts = this.now()
     this.store.insert({ id, account, product, status: COMP, created: ts, updated: ts })
     this.log(`[accounts] admin ${by}: ${id} ${product} added to account ${account.slice(0, 16)}… (no charge)`)
-    return this.adminView(await this.#provision(this.store.get(id)))
+    return this.adminView(await this.#provision(this.#row(id)))
   }
 
   /**
    * Borra la réplica (la pila). Si tenía una suscripción viva se cancela antes, para que no se
    * siga cobrando algo que ya no existe; devolver es aparte (`adminRefund`).
    */
+  /** @param {{ id: unknown, by: string }} o */
   async adminRemove ({ id, by }) {
     const row = this.#adminRow(id)
     if (row.stack === 'deleted') fail('already-deleted', `${row.id}: the replica is already deleted`)
-    if (row.stack === 'none' || !row.vault) fail('no-stack', `${row.id}: no replica was ever created`)
+    const vault = row.stack === 'none' ? null : row.vault
+    if (!vault) return fail('no-stack', `${row.id}: no replica was ever created`)
     if (row.paypal_id && (row.status === 'ACTIVE' || row.status === 'SUSPENDED')) {
       await this.#payments().cancelSubscription(row.paypal_id, 'removed by the administrator')
       await this.refresh(row)
     }
-    await this.vaults.remove(row.vault)
+    await this.vaults.remove(vault)
     this.store.update(row.id, { stack: 'deleted', vault_on: 0, note: 'removed by admin', updated: this.now() })
     this.log(`[accounts] admin ${by}: ${row.id} replica ${row.vault} removed`)
-    return this.adminView(this.store.get(row.id))
+    return this.adminView(this.#row(row.id))
   }
 }

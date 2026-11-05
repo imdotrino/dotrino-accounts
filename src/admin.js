@@ -17,6 +17,8 @@ import { keyLabel } from '@dotrino/identity/capabilities'
 export const ADMIN_CAP = 'admin'
 
 /** Lo que se puede pedir, y qué método de `Accounts` lo hace. */
+/** @typedef {(a: import('./accounts.js').Accounts, args: any, by: string) => Promise<unknown>} AdminOp  `args` llega de la página y cada método de `Accounts` lo comprueba */
+/** @type {Record<string, AdminOp>} */
 const OPS = {
   list: (a, args, by) => a.adminList({ by }),
   setOn: (a, args, by) => a.adminSetOn({ id: args.id, on: args.on, by }),
@@ -27,7 +29,7 @@ const OPS = {
 export const ADMIN_OPS = Object.freeze(Object.keys(OPS))
 
 /**
- * @param {{ accounts: import('./accounts.js').Accounts, checkCap: (pub:string, cap:string) => Promise<{ok:boolean, code?:string}>, log?: Function }} o
+ * @param {{ accounts: import('./accounts.js').Accounts, checkCap: (pub:string, cap:string) => Promise<{ok:boolean, code?:string}>, log?: (...a: unknown[]) => void }} o
  * @returns {(device: string, msg: any) => Promise<object|null>} la respuesta, o null si el mensaje no es de administración.
  */
 export function makeAdmin ({ accounts, checkCap, log = () => {} }) {
@@ -35,7 +37,7 @@ export function makeAdmin ({ accounts, checkCap, log = () => {} }) {
   return async function handle (device, msg) {
     if (msg?.type !== 'admin') return null
     const rid = msg.rid
-    const reply = (r) => ({ type: 'admin.result', rid, ...r })
+    const reply = (/** @type {object} */ r) => ({ type: 'admin.result', rid, ...r })
     const by = await keyLabel(device)
     const gate = await checkCap(device, ADMIN_CAP)
     if (!gate.ok) {
@@ -48,7 +50,8 @@ export function makeAdmin ({ accounts, checkCap, log = () => {} }) {
     if (msg.args !== undefined && (typeof msg.args !== 'object' || msg.args === null)) return reply({ ok: false, code: 'bad-request', error: 'args must be an object' })
     try {
       return reply({ ok: true, result: await fn(accounts, msg.args || {}, by) })
-    } catch (e) {
+    } catch (err) {
+      const e = /** @type {Error & { code?: string }} */ (err)
       log(`[accounts] admin ${by}: ${msg.op} failed: ${e.code || 'internal'} ${e.message}`)
       return reply({ ok: false, code: e.code || 'internal', error: e.message })
     }

@@ -10,7 +10,8 @@
   },
   "scripts": {
     "start": "node server.js serve",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1145.0",
@@ -28,5 +29,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/imdotrino/dotrino-accounts.git"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
   }
 }

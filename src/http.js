@@ -19,14 +19,17 @@ import { Accounts, AccountsError, priceOf, PRODUCT } from './accounts.js'
 export const PROTOCOL = 1
 const MAX_BODY = 256 * 1024
 
+/** @param {import('node:http').IncomingMessage} req @returns {Promise<string>} */
 const readBody = (req) => new Promise((resolve, reject) => {
   let b = ''
-  req.on('data', (c) => { b += c; if (b.length > MAX_BODY) { reject(new AccountsError('body-too-large', 'body too large')); req.destroy() } })
+  req.on('data', (/** @type {Buffer} */ c) => { b += c; if (b.length > MAX_BODY) { reject(new AccountsError('body-too-large', 'body too large')); req.destroy() } })
   req.on('end', () => resolve(b))
   req.on('error', reject)
 })
+/** @param {string} raw @returns {any} el cuerpo tal cual llegó: cada ruta mira lo suyo */
 const parse = (raw) => { try { return raw ? JSON.parse(raw) : {} } catch (_) { throw new AccountsError('bad-json', 'body is not JSON') } }
 
+/** @type {Record<string, number>} */
 const STATUS = {
   'sub-not-found': 404, 'stack-not-found': 404, 'not-found': 404,
   'bad-request': 400, 'bad-json': 400, 'bad-version': 400, 'request-mismatch': 400,
@@ -35,11 +38,17 @@ const STATUS = {
   'no-subscription': 409, 'payments-unavailable': 503, 'provider-error': 502, 'provider-not-found': 502, 'payment-declined': 402, 'bad-id': 400, 'body-too-large': 413
 }
 
+/**
+ * @param {{ accounts: import('./accounts.js').Accounts, version: string, product?: string, log?: (...a: unknown[]) => void }} o
+ * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<unknown>}
+ */
 export function makeHandler ({ accounts, version, product = '@dotrino/accounts-server', log = () => {} }) {
+  /** @param {import('node:http').ServerResponse} res @param {number} status @param {unknown} obj */
   const json = (res, status, obj) => {
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type' })
     res.end(JSON.stringify(obj))
   }
+  /** @type {Record<string, (b: any) => Promise<unknown>>} */
   const routes = {
     'POST /subscribe': (b) => accounts.subscribe({ req: b.req }),
     'POST /confirm': (b) => accounts.confirm({ id: b.id, req: b.req }),
@@ -50,7 +59,7 @@ export function makeHandler ({ accounts, version, product = '@dotrino/accounts-s
   }
 
   return async function handle (req, res) {
-    const url = new URL(req.url, 'http://x')
+    const url = new URL(req.url || '/', 'http://x')
     const path = url.pathname.replace(/\/+$/, '') || '/'
     try {
       if (req.method === 'OPTIONS') return json(res, 204, {})
@@ -69,7 +78,8 @@ export function makeHandler ({ accounts, version, product = '@dotrino/accounts-s
         return json(res, 200, await fn(parse(raw)))
       }
       return json(res, 405, { code: 'method-not-allowed' })
-    } catch (e) {
+    } catch (err) {
+      const e = /** @type {Error & { code?: string }} */ (err)
       const code = e?.code || 'internal'
       if (!STATUS[code]) log(`[accounts] ${req.method} ${path}: ${e?.stack || e}`)
       return json(res, STATUS[code] || 500, { code, error: STATUS[code] ? e.message : 'internal error' })

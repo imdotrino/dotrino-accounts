@@ -11,13 +11,19 @@ import { formatDeviceInfo, deviceInfo } from '@dotrino/vault/device-info'
 export const NS = 'accounts'
 export const LABEL = 'accounts'
 
+/** @returns {string} */
 export function identityDir () { return process.env.ACCOUNTS_DIR || dataDir('dotrino-accounts') }
 
+/** @param {string} invite @param {{ dir?: string }} [o] */
 export async function enrollService (invite, { dir = identityDir() } = {}) {
   return enroll({ qr: invite, dir, label: LABEL, ns: NS })
 }
 
-/** Qué aparato es (CONVENCIONES §15.1): el ID primero. Sin red, del enlace del disco. */
+/**
+ * Qué aparato es (CONVENCIONES §15.1): el ID primero. Sin red, del enlace del disco.
+ * @param {{ dir?: string, json?: boolean }} [o]
+ * @returns {Promise<string>}
+ */
 export async function info ({ dir = identityDir(), json = false } = {}) {
   const link = loadLink(dir)
   if (!link?.device?.publickey) throw Object.assign(new Error(`not enrolled (dir ${dir})`), { code: 'not-enrolled' })
@@ -25,6 +31,14 @@ export async function info ({ dir = identityDir(), json = false } = {}) {
   return json ? JSON.stringify(i, null, 2) : formatDeviceInfo(i)
 }
 
+/**
+ * @typedef {{ device: string, secretsArgs: { ns: string, proxyUrl: string, masterPubkey: string, device: object, cert: object, enc?: object } }} ServiceIdentity
+ */
+
+/**
+ * @param {{ dir?: string, log?: (...a: unknown[]) => void }} [o]
+ * @returns {Promise<ServiceIdentity>}
+ */
 export async function loadServiceIdentity ({ dir = identityDir(), log = console.log } = {}) {
   const raw = loadLink(dir)
   if (!raw?.device?.privateJwk) throw Object.assign(new Error(`not enrolled: run \`dotrino-accounts enroll <invite>\` (dir ${dir})`), { code: 'not-enrolled' })
@@ -36,7 +50,12 @@ export async function loadServiceIdentity ({ dir = identityDir(), log = console.
   return { device: raw.device.publickey, secretsArgs: { ns: NS, proxyUrl: link.proxy, masterPubkey: raw.iss, device: raw.device, cert: raw.cert, enc: raw.enc } }
 }
 
-/** Los secretos del cajón `accounts`. Espera a la bóveda: sin ella no se cobra ni se crean bóvedas. */
+/**
+ * Los secretos del cajón `accounts`. Espera a la bóveda: sin ella no se cobra ni se crean bóvedas.
+ * @param {ServiceIdentity} identity
+ * @param {{ log?: (...a: unknown[]) => void, product?: string, version?: string }} [o]
+ * @returns {Promise<Record<string, string>>}
+ */
 export async function loadSecrets (identity, { log = console.log, product, version } = {}) {
   return waitForSecrets({ ...identity.secretsArgs, product, version, onRetry: (e, ms) => log(`[vault] ${e.message}; retry in ${Math.round(ms / 1000)}s`) })
 }

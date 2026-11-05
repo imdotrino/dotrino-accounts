@@ -26,8 +26,9 @@ import { startRemoteAgent } from '@dotrino/remote-agent/agent'
 import { loadServiceIdentity, loadSecrets, enrollService, info, identityDir, LABEL } from './src/identity.js'
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
-const log = (...a) => console.log(new Date().toISOString(), ...a)
+const log = (/** @type {unknown[]} */ ...a) => console.log(new Date().toISOString(), ...a)
 const [cmd = 'serve', arg] = process.argv.slice(2)
+/** @type {(e: Error & { code?: string }) => never} */
 const die = (e) => { console.error(`dotrino-accounts: ${e.message}${e.code ? ` (${e.code})` : ''}`); process.exit(1) }
 
 if (cmd === 'info') {
@@ -62,8 +63,13 @@ if (cmd === 'info') {
   // LA ADMINISTRACIÓN (§10): el mismo enlace del servicio atiende sesiones cifradas de los
   // aparatos de la cuenta de Dotrino. El pong dice `kind: 'accounts'`, que es como la página
   // /admin encuentra este servicio; quién puede administrar lo decide el acta en cada petición.
+  /** @type {import('@dotrino/remote-agent/agent').RemoteAgent | null} */
   let ra = null
-  const admin = makeAdmin({ accounts, checkCap: (pub, cap) => ra.checkCap(pub, cap), log })
+  const admin = makeAdmin({ accounts, checkCap: (pub, cap) => {
+    // Las sesiones las abre el agente, así que nadie pregunta antes de que exista.
+    if (!ra) throw Object.assign(new Error('admin: the remote agent is not running yet'), { code: 'not-ready' })
+    return ra.checkCap(pub, cap)
+  }, log })
   ra = await startRemoteAgent({
     // Qué es, para la fila de este aparato en la bóveda. Necesita `sign` para abrir sesiones con
     // `/admin`, y eso lo declara el propio pilar: si el acta no se lo da, la bóveda lo enseña.

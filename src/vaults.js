@@ -33,13 +33,31 @@ import { fetchVerified } from '@dotrino/update/fetch'
 import { CloudFormationClient, CreateStackCommand, DeleteStackCommand, DescribeStacksCommand, DescribeStackEventsCommand } from '@aws-sdk/client-cloudformation'
 import { LambdaClient, InvokeCommand, PutFunctionConcurrencyCommand, DeleteFunctionConcurrencyCommand } from '@aws-sdk/client-lambda'
 
+/**
+ * Lo que contesta la función de una bóveda alojada a `invoke` (`dotrino-vault/lambda`).
+ * @typedef {{ ok?: boolean, error?: string, message?: string, code?: string, deviceId?: string,
+ *   enrolled?: boolean, req?: string, door?: object }} VaultReply
+ */
+
+/**
+ * @typedef {object} Vaults
+ * @property {(o: { vault: string, owner: string, mode: string }) => Promise<void>} create
+ * @property {(vault: string, mode: string) => Promise<{ state: 'creating' | 'ready' | 'failed', reason?: string }>} describe
+ * @property {(vault: string, payload: { kind: string } & Record<string, unknown>) => Promise<VaultReply | null>} invoke
+ * @property {(vault: string) => Promise<void>} remove
+ * @property {(vault: string, on: boolean) => Promise<void>} setOn
+ */
+
+/** @param {string} vault */
 export const stackName = (vault) => `dotrino-vault-${vault}`
+/** @param {string} vault */
 export const functionName = (vault) => `dotrino-vault-${vault}`
 
 export const VAULT_REPO = 'imdotrino/dotrino-vault'
 
 /**
  * La plantilla de la ÚLTIMA release, verificada. `latest` y `verified` se inyectan en las pruebas.
+ * @param {{ repo?: string, latest?: typeof latestVersion, verified?: typeof fetchVerified, fetch?: typeof globalThis.fetch }} [o]
  * @returns {Promise<{ version: string, body: string }>}
  */
 export async function latestTemplate ({ repo = VAULT_REPO, latest = latestVersion, verified = fetchVerified, fetch = globalThis.fetch } = {}) {
@@ -55,6 +73,12 @@ export async function latestTemplate ({ repo = VAULT_REPO, latest = latestVersio
   } finally { if (v.file) rmSync(dirname(v.file), { recursive: true, force: true }) }
 }
 
+/**
+ * @param {{ region: string, credentials: { accessKeyId: string, secretAccessKey: string },
+ *   sharedKeyArn: string, cfnRoleArn: string, roleBoundaryArn: string,
+ *   template?: () => Promise<{ version: string, body: string }>, log?: (...a: unknown[]) => void }} o
+ * @returns {Vaults}
+ */
 export function awsVaults ({ region, credentials, sharedKeyArn, cfnRoleArn, roleBoundaryArn, template = latestTemplate, log = () => {} }) {
   for (const [k, v] of Object.entries({ region, sharedKeyArn, cfnRoleArn, roleBoundaryArn })) {
     if (!v) throw Object.assign(new Error(`vaults: ${k} is required`), { code: 'vaults-misconfigured' })
@@ -64,6 +88,7 @@ export function awsVaults ({ region, credentials, sharedKeyArn, cfnRoleArn, role
 
   // El estado final de una pila rota dice cómo acabó el ROLLBACK, no por qué empezó: la causa
   // es el primer recurso que falló al crearse, y esa está en los eventos.
+  /** @param {string} vault */
   async function firstFailure (vault) {
     const r = await cfn.send(new DescribeStackEventsCommand({ StackName: stackName(vault) }))
     const e = (r.StackEvents || []).filter((x) => x.ResourceStatus === 'CREATE_FAILED' && x.ResourceStatusReason).at(-1)
@@ -76,6 +101,7 @@ export function awsVaults ({ region, credentials, sharedKeyArn, cfnRoleArn, role
      * segunda bóveda (`'join'`). `owner` es la cuenta que la pagó: nace sabiéndolo y rechaza la
      * invitación de cualquier otra.
      */
+    /** @param {{ vault: string, owner: string, mode: string }} o */
     async create ({ vault, owner, mode }) {
       if (!/^[0-9a-f]{64}$/.test(owner || '')) throw Object.assign(new Error(`vaults: no owner for ${vault}`), { code: 'no-owner' })
       if (mode !== 'replica' && mode !== 'join') throw Object.assign(new Error(`vaults: no stack mode ${mode}`), { code: 'bad-mode' })
@@ -97,12 +123,16 @@ export function awsVaults ({ region, credentials, sharedKeyArn, cfnRoleArn, role
       }))
     },
 
-    /** @returns {Promise<{ state:'creating'|'ready'|'failed', reason?:string }>} */
+    /**
+     * @param {string} vault @param {string} mode
+     * @returns {Promise<{ state:'creating'|'ready'|'failed', reason?:string }>}
+     */
     async describe (vault, mode) {
       const r = await cfn.send(new DescribeStacksCommand({ StackName: stackName(vault) }))
       const s = r.Stacks?.[0]
       if (!s) throw Object.assign(new Error(`vaults: no stack for ${vault}`), { code: 'stack-not-found' })
-      if (/_IN_PROGRESS$/.test(s.StackStatus) && !/ROLLBACK/.test(s.StackStatus)) return { state: 'creating' }
+      const status = String(s.StackStatus)
+      if (/_IN_PROGRESS$/.test(status) && !/ROLLBACK/.test(status)) return { state: 'creating' }
       if (s.StackStatus === 'CREATE_COMPLETE' || s.StackStatus === 'UPDATE_COMPLETE') {
         const out = Object.fromEntries((s.Outputs || []).map((o) => [o.OutputKey, o.OutputValue]))
         if (out.Mode !== mode) throw Object.assign(new Error(`vaults: stack ${vault} runs ${out.Mode}, not ${mode} (template too old?)`), { code: 'stack-outputs' })
@@ -111,7 +141,11 @@ export function awsVaults ({ region, credentials, sharedKeyArn, cfnRoleArn, role
       return { state: 'failed', reason: `${s.StackStatus}${s.StackStatusReason ? ': ' + s.StackStatusReason : ''}${await firstFailure(vault)}` }
     },
 
-    /** Le habla a la función (`{ kind:'enroll' | 'enroll-door' | 'status' }`) y devuelve lo que conteste. */
+    /**
+     * Le habla a la función (`{ kind:'enroll' | 'enroll-door' | 'status' }`) y devuelve lo que conteste.
+     * @param {string} vault @param {{ kind: string } & Record<string, unknown>} payload
+     * @returns {Promise<VaultReply | null>}
+     */
     async invoke (vault, payload) {
       const r = await lambda.send(new InvokeCommand({ FunctionName: functionName(vault), InvocationType: 'RequestResponse', Payload: Buffer.from(JSON.stringify(payload)) }))
       if (r.FunctionError) throw Object.assign(new Error(`vaults: ${vault} failed on ${payload.kind}: ${r.FunctionError}`), { code: 'function-error' })
@@ -119,10 +153,12 @@ export function awsVaults ({ region, credentials, sharedKeyArn, cfnRoleArn, role
     },
 
     /** Borra la pila (las que nadie enroló). El bucket se queda: lo retiene la plantilla. */
+    /** @param {string} vault */
     async remove (vault) {
       await cfn.send(new DeleteStackCommand({ StackName: stackName(vault), RoleARN: cfnRoleArn }))
     },
 
+    /** @param {string} vault @param {boolean} on */
     async setOn (vault, on) {
       if (on) await lambda.send(new DeleteFunctionConcurrencyCommand({ FunctionName: functionName(vault) }))
       else await lambda.send(new PutFunctionConcurrencyCommand({ FunctionName: functionName(vault), ReservedConcurrentExecutions: 0 }))

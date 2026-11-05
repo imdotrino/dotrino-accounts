@@ -15,9 +15,32 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 
+/**
+ * Una fila de `subs`, como sale de SQLite (los booleanos son 0/1).
+ * @typedef {object} SubRow
+ * @property {string} id
+ * @property {string} account
+ * @property {import('./accounts.js').Product} product
+ * @property {string | null} paypal_id
+ * @property {string} status
+ * @property {number | null} paid_through
+ * @property {string | null} vault        el nombre de la pila; null hasta que se crea
+ * @property {string} stack               'none' | 'creating' | 'ready' | 'failed' | 'deleted'
+ * @property {string | null} device
+ * @property {number} enrolled
+ * @property {number} vault_on
+ * @property {string | null} refund       'pending' | 'done' | 'none'
+ * @property {number | null} admin_on
+ * @property {string | null} note
+ * @property {number} created
+ * @property {number} updated
+ */
+
+/** @type {(keyof SubRow)[]} */
 const COLS = ['id', 'account', 'product', 'paypal_id', 'status', 'paid_through', 'vault', 'stack', 'device', 'enrolled', 'vault_on', 'refund', 'admin_on', 'note', 'created', 'updated']
 
 export class Store {
+  /** @param {string} [file] */
   constructor (file = ':memory:') {
     this.db = new DatabaseSync(file)
     // Una base de antes de la réplica (con `claim` y el código de activación) no se migra: en
@@ -42,32 +65,48 @@ export class Store {
     `)
   }
 
+  /** @param {Partial<SubRow> & Pick<SubRow, 'id' | 'account' | 'product' | 'status' | 'created' | 'updated'>} row */
   insert (row) {
     const cols = COLS.filter((c) => row[c] !== undefined)
-    this.db.prepare(`INSERT INTO subs (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map((c) => row[c]))
+    this.db.prepare(`INSERT INTO subs (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map((c) => /** @type {import('node:sqlite').SQLInputValue} */ (row[c])))
   }
 
+  /**
+   * @param {string} id
+   * @param {Partial<SubRow>} fields
+   */
   update (id, fields) {
-    const cols = Object.keys(fields)
+    const cols = /** @type {(keyof SubRow)[]} */ (Object.keys(fields))
     for (const c of cols) if (!COLS.includes(c)) throw new Error(`store: unknown column ${c}`)
-    this.db.prepare(`UPDATE subs SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...cols.map((c) => fields[c]), id)
+    this.db.prepare(`UPDATE subs SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...cols.map((c) => /** @type {import('node:sqlite').SQLInputValue} */ (fields[c])), id)
   }
 
-  get (id) { return this.db.prepare('SELECT * FROM subs WHERE id = ?').get(id) || null }
-  byPaypal (paypalId) { return this.db.prepare('SELECT * FROM subs WHERE paypal_id = ?').get(paypalId) || null }
+  /** @param {string} id @returns {SubRow | null} */
+  get (id) { return /** @type {SubRow | undefined} */ (this.db.prepare('SELECT * FROM subs WHERE id = ?').get(id)) || null }
+  /** @param {string} paypalId @returns {SubRow | null} */
+  byPaypal (paypalId) { return /** @type {SubRow | undefined} */ (this.db.prepare('SELECT * FROM subs WHERE paypal_id = ?').get(paypalId)) || null }
   /** Todas, para el administrador: las más nuevas primero. */
-  all () { return this.db.prepare('SELECT * FROM subs ORDER BY created DESC').all() }
-  ofAccount (account) { return this.db.prepare('SELECT * FROM subs WHERE account = ? ORDER BY created').all(account) }
+  /** @returns {SubRow[]} */
+  all () { return /** @type {SubRow[]} */ (this.db.prepare('SELECT * FROM subs ORDER BY created DESC').all()) }
+  /** @param {string} account @returns {SubRow[]} */
+  ofAccount (account) { return /** @type {SubRow[]} */ (this.db.prepare('SELECT * FROM subs WHERE account = ? ORDER BY created').all(account)) }
   /** Las que tienen algo que vigilar: una suscripción en PayPal o una pila que no se borró. */
-  live () { return this.db.prepare("SELECT * FROM subs WHERE stack != 'deleted' AND (paypal_id IS NOT NULL OR stack != 'none')").all() }
+  /** @returns {SubRow[]} */
+  live () { return /** @type {SubRow[]} */ (this.db.prepare("SELECT * FROM subs WHERE stack != 'deleted' AND (paypal_id IS NOT NULL OR stack != 'none')").all()) }
 
-  /** @returns {boolean} false si el evento ya se había visto (PayPal reintenta). */
+  /**
+   * @param {{ id: string, sub: string | null, kind: string, json: string, ts: number }} e
+   * @returns {boolean} false si el evento ya se había visto (PayPal reintenta).
+   */
   addEvent ({ id, sub, kind, json, ts }) {
     const r = this.db.prepare('INSERT OR IGNORE INTO events (id, sub, kind, json, ts) VALUES (?, ?, ?, ?, ?)').run(id, sub, kind, json, ts)
     return r.changes === 1
   }
 
-  /** @returns {boolean} false si el nonce ya se usó. */
+  /**
+   * @param {string} nonce @param {number} exp @param {number} now
+   * @returns {boolean} false si el nonce ya se usó.
+   */
   useNonce (nonce, exp, now) {
     this.db.prepare('DELETE FROM nonces WHERE exp < ?').run(now)
     return this.db.prepare('INSERT OR IGNORE INTO nonces (nonce, exp) VALUES (?, ?)').run(nonce, exp).changes === 1
